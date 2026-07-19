@@ -1,0 +1,7 @@
+# build output
+/out/
+
+# editor / os cruft
+*.swp
+*~
+.DS_Store
