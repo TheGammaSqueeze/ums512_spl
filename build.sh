@@ -3,16 +3,24 @@
 # Build the ums512_1h10 (Unisoc sharkl5pro) SPL from source and wrap it into a
 # flashable spl_a style image (512 byte DHTB header + payload, padded to 4 MiB).
 #
+# Variants:
+#   nosec   CONFIG_SECBOOT off, unsigned. Boots on a unit that is not fused.
+#   secure  CONFIG_SECBOOT on, unsigned. For inspection or self signing.
+#   signed  CONFIG_SECBOOT on, then RSA-2048 signed with rsa2048_0 using the
+#           stock sprd_sign tool. This is the variant a fused unit expects.
+#
 # Usage:
-#   ./build.sh [nosec|secure|both]     (default: both)
+#   ./build.sh [nosec|secure|signed|all]     (default: all)
 #
 # Environment overrides:
 #   CROSS_COMPILE   cross compiler prefix   (default: aarch64-linux-gnu-)
 #   PART_SIZE       output partition size   (default: 4194304, i.e. 4 MiB)
 #   PACKER          dhtb | imgheaderinsert  (default: imgheaderinsert)
+#                   Only affects the unsigned variants. Signed always uses the
+#                   stock imgheaderinsert + sprd_sign.
 #
-# Output goes to out/<variant>/spl_a_<variant>.img (and spl_b is a byte copy,
-# matching how the two slots hold identical SPLs on this device).
+# Output: out/<variant>/spl_a_<variant>.img and a spl_b copy (both slots hold
+# the same SPL on this device).
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -23,12 +31,18 @@ CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 PART_SIZE="${PART_SIZE:-4194304}"
 PACKER="${PACKER:-imgheaderinsert}"
 
-VARIANTS="${1:-both}"
+IHI="$REPO_DIR/tools/imgheaderinsert"                 # 2 arg, unsigned DHTB packing
+IHI_SECURE="$REPO_DIR/tools/imgheaderinsert_secure"   # 3 arg secure mode, emits -sign.bin
+SPRD_SIGN="$REPO_DIR/tools/sprd_sign"
+SIGN_CONFIG="$REPO_DIR/tools/sign-config"
+
+VARIANTS="${1:-all}"
 case "$VARIANTS" in
 	nosec)  VARIANTS="nosec" ;;
 	secure) VARIANTS="secure" ;;
-	both)   VARIANTS="nosec secure" ;;
-	*) echo "usage: $0 [nosec|secure|both]"; exit 2 ;;
+	signed) VARIANTS="signed" ;;
+	all)    VARIANTS="nosec secure signed" ;;
+	*) echo "usage: $0 [nosec|secure|signed|all]"; exit 2 ;;
 esac
 
 # --- sanity checks ----------------------------------------------------------
@@ -40,58 +54,70 @@ for t in make python3; do
 	command -v "$t" >/dev/null 2>&1 || { echo "error: $t not found"; exit 1; }
 done
 
-build_one() {
-	local variant="$1"
-	local out="$REPO_DIR/out/$variant"
-	local frag="$REPO_DIR/board/${BOARD}.${variant}.config"
-
-	echo "==================================================================="
-	echo " building SPL variant: $variant"
-	echo "==================================================================="
-	rm -rf "$out"
-	mkdir -p "$out"
-
-	# Configure. BUILD_DIR must be set so 'distclean' targets the out tree and
-	# never the source tree (a bare 'make distclean' expands to rm -rf * here).
-	make -C "$CHIPRAM_DIR" O="$out" CROSS_COMPILE="$CROSS_COMPILE" distclean >/dev/null
-	make -C "$CHIPRAM_DIR" O="$out" CROSS_COMPILE="$CROSS_COMPILE" "${BOARD}_config" >/dev/null
-
-	# Append the board config fragment, mirroring AndroidChipram.mk.
-	cat "$frag" >> "$out/include/config.h"
-
-	# Compile.
-	make -C "$CHIPRAM_DIR" O="$out" CROSS_COMPILE="$CROSS_COMPILE" -j"$(nproc)"
-
-	local payload="$out/nand_spl/u-boot-spl-16k.bin"
-	[ -f "$payload" ] || { echo "error: SPL payload not produced: $payload"; exit 1; }
-
-	# Wrap with DHTB header and pad to the partition size.
-	local img="$out/spl_a_${variant}.img"
-	if [ "$PACKER" = "dhtb" ]; then
-		python3 "$REPO_DIR/scripts/dhtb_pack.py" "$payload" "$img" "$PART_SIZE"
-	else
-		# imgheaderinsert writes <name>.img next to its input.
-		cp "$payload" "$out/spl_${variant}.bin"
-		"$REPO_DIR/tools/imgheaderinsert" "$out/spl_${variant}.bin" 1 >/dev/null
-		python3 - "$out/spl_${variant}.img" "$img" "$PART_SIZE" <<'PY'
+pad_to_part() { # <src> <dst>
+	python3 - "$1" "$2" "$PART_SIZE" <<'PY'
 import sys
 src, dst, size = sys.argv[1], sys.argv[2], int(sys.argv[3], 0)
 d = open(src, "rb").read()
 if len(d) > size:
-    sys.exit("error: DHTB image %d larger than partition %d" % (len(d), size))
+    sys.exit("error: image %d larger than partition %d" % (len(d), size))
 open(dst, "wb").write(d + b"\x00" * (size - len(d)))
 PY
-	fi
-	cp "$img" "$out/spl_b_${variant}.img"
+}
 
-	echo
+# compile the SPL for a given config fragment; echoes the payload path
+compile_spl() { # <out_dir> <config_fragment>
+	local out="$1" frag="$2"
+	rm -rf "$out"; mkdir -p "$out"
+	# BUILD_DIR must be set so 'distclean' targets the out tree, never the source
+	# tree (a bare 'make distclean' here expands to rm -rf * and wipes it).
+	make -C "$CHIPRAM_DIR" O="$out" CROSS_COMPILE="$CROSS_COMPILE" distclean >/dev/null
+	make -C "$CHIPRAM_DIR" O="$out" CROSS_COMPILE="$CROSS_COMPILE" "${BOARD}_config" >/dev/null
+	cat "$frag" >> "$out/include/config.h"
+	make -C "$CHIPRAM_DIR" O="$out" CROSS_COMPILE="$CROSS_COMPILE" -j"$(nproc)" >/dev/null
+	local payload="$out/nand_spl/u-boot-spl-16k.bin"
+	[ -f "$payload" ] || { echo "error: SPL payload not produced" >&2; exit 1; }
+	echo "$payload"
+}
+
+build_variant() {
+	local variant="$1"
+	local out="$REPO_DIR/out/$variant"
+	echo "==================================================================="
+	echo " building SPL variant: $variant"
+	echo "==================================================================="
+
+	local frag payload img="$out/spl_a_${variant}.img"
+	case "$variant" in
+	nosec)  frag="$REPO_DIR/board/${BOARD}.nosec.config" ;;
+	*)      frag="$REPO_DIR/board/${BOARD}.secure.config" ;;   # secure and signed
+	esac
+
+	payload="$(compile_spl "$out" "$frag")"
+
+	if [ "$variant" = "signed" ]; then
+		# Factory flow: imgheaderinsert in secure mode (arg 0 = secure, 0 = keep
+		# original), then sprd_sign with rsa2048_0 (pss), then pad.
+		cp "$payload" "$out/u-boot-spl-16k.bin"
+		( cd "$out" && "$IHI_SECURE" u-boot-spl-16k.bin 0 0 >/dev/null )
+		"$SPRD_SIGN" "$out/u-boot-spl-16k-sign.bin" "$SIGN_CONFIG" pss >/dev/null
+		pad_to_part "$out/u-boot-spl-16k-sign.bin" "$img"
+	elif [ "$PACKER" = "dhtb" ]; then
+		python3 "$REPO_DIR/scripts/dhtb_pack.py" "$payload" "$img" "$PART_SIZE"
+	else
+		cp "$payload" "$out/spl_${variant}.bin"
+		"$IHI" "$out/spl_${variant}.bin" 1 >/dev/null   # arg 1 = nosec, add payload hash
+		pad_to_part "$out/spl_${variant}.img" "$img"
+	fi
+
+	cp "$img" "$out/spl_b_${variant}.img"
 	echo "  payload : $payload ($(stat -c%s "$payload") bytes)"
 	echo "  image   : $img ($(stat -c%s "$img") bytes)"
 	echo
 }
 
 for v in $VARIANTS; do
-	build_one "$v"
+	build_variant "$v"
 done
 
 echo "done. Images:"

@@ -54,12 +54,46 @@ fused unit that boots unsigned or patched u-boot. Use `secure` only on a fused
 unit where the downstream images are signed with the matching key, otherwise
 the SPL will reject them.
 
-### nosec vs secure
+### variants
 
-| variant | CONFIG_SECBOOT | behaviour |
-| ------- | -------------- | --------- |
-| nosec   | off            | SPL loads u-boot, sml, trustos with hash checks only. Boots unsigned images. |
-| secure  | on             | SPL RSA verifies loaded images against fused keys. Rejects images not signed with the matching key. |
+| variant | CONFIG_SECBOOT | signed | use |
+| ------- | -------------- | ------ | --- |
+| nosec   | off            | no     | Unit that is not fused. SPL loads u-boot, sml, trustos with hash checks only, boots unsigned images. |
+| secure  | on             | no     | Inspection, or to sign yourself. SPL RSA verifies downstream images against fused keys. |
+| signed  | on             | yes    | Fused unit. Same as secure, then the SPL itself is RSA-2048 signed with rsa2048_0 so the BootROM accepts it. |
+
+### Signing (signed variant)
+
+The `signed` variant reproduces the factory signing chain using the stock tools
+vendored under `tools/`:
+
+1. build the SPL with the secure config,
+2. `tools/imgheaderinsert_secure u-boot-spl-16k.bin 0 0` adds the DHTB header in
+   secure mode and produces `u-boot-spl-16k-sign.bin`,
+3. `tools/sprd_sign u-boot-spl-16k-sign.bin tools/sign-config pss` appends the
+   RSA-2048 signature using the key **rsa2048_0**,
+4. pad to 4 MiB.
+
+The signing key is `tools/sign-config/rsa2048_0.pem`. It is the same key the
+stock `spl_a.img` was signed with: the modulus embedded in the stock signature
+matches `rsa2048_0` exactly. The keys here are Unisoc BSP reference keys,
+included at the repository owner's request so the build is self contained.
+
+`tools/sprd_sign` and `tools/imgheaderinsert_secure` load `libc++.so` from
+`tools/lib64` via their RUNPATH, so no system libc++ is needed.
+
+**Known framing difference.** The vendored `sprd_sign` (2020 BSP) produces a
+valid rsa2048_0 signature, but its container framing differs from this specific
+stock image in three fields the newer factory tool stamps: the `SIMGHDR` ASCII
+magic at the start of the signature block, the DHTB marker words at offset 0x28,
+and the DHTB fields at 0x3c and 0x40. The signature itself covers only the SPL
+code (verified: `to be signed data size` equals the code size), and the two
+signature blocks are otherwise byte identical in structure (same 692 byte block,
+same key, same layout). Whether a given fused BootROM requires the `SIMGHDR`
+magic to locate the signature is not verified here. If your unit rejects the
+signed image, you need the exact newer `sprd_sign` / `imgheaderinsert` revision
+that built the stock image (from the full device BSP) to reproduce the framing
+byte for byte.
 
 ## Where the config comes from
 
@@ -118,11 +152,10 @@ The stock `spl_a.img` from this device was examined byte for byte. Findings:
    flashing. Recovery from a bad spl is normally still possible through the
    Unisoc BootROM download mode.
 
-4. To make a fully compatible image on a fused unit, the SPL payload must be
-   signed with rsa2048_0 using `sprd_sign` (the same step the factory
-   packimage.sh runs: `imgheaderinsert` then `sprd_sign <img> <config> pss`).
-   That signing step is not wired into `build.sh` here, because it depends on
-   vendoring the private key, which is a decision left to the repo owner.
+4. To make a fully compatible image on a fused unit, the SPL payload is signed
+   with rsa2048_0 using `sprd_sign` (the same step the factory packimage.sh
+   runs). This is wired into `build.sh` as the `signed` variant. See "Signing"
+   below, including the one known framing difference from the stock image.
 
 ### DDR timing and device tree
 
