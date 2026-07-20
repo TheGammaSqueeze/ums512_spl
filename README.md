@@ -89,18 +89,23 @@ included at the repository owner's request so the build is self contained.
 `tools/sprd_sign` and `tools/imgheaderinsert_secure` load `libc++.so` from
 `tools/lib64` via their RUNPATH, so no system libc++ is needed.
 
-**Known framing difference.** The vendored `sprd_sign` (2020 BSP) produces a
-valid rsa2048_0 signature, but its container framing differs from this specific
-stock image in three fields the newer factory tool stamps: the `SIMGHDR` ASCII
-magic at the start of the signature block, the DHTB marker words at offset 0x28,
-and the DHTB fields at 0x3c and 0x40. The signature itself covers only the SPL
-code (verified: `to be signed data size` equals the code size), and the two
-signature blocks are otherwise byte identical in structure (same 692 byte block,
-same key, same layout). Whether a given fused BootROM requires the `SIMGHDR`
-magic to locate the signature is not verified here. If your unit rejects the
-signed image, you need the exact newer `sprd_sign` / `imgheaderinsert` revision
-that built the stock image (from the full device BSP) to reproduce the framing
-byte for byte.
+**Framing.** The vendored `sprd_sign` (2020 BSP) produces a valid rsa2048_0
+signature but leaves the DHTB header and SIMGHDR block magic incomplete compared
+with the newer factory tool. `scripts/stock_frame.py` stamps the missing fields
+so the container matches the stock image byte for byte in structure:
+
+  - DHTB 0x08: SHA256 over the code (download integrity hash)
+  - DHTB 0x28: the `cccccccc aaaaaaaa` marker words
+  - DHTB 0x3c: code size, DHTB 0x40: code size + 0x494
+  - the `SIMGHDR` magic at the start of the signature block
+
+These fields were derived from the stock `spl_a.img` and cross checked against
+`uboot_a.img` (the 0x40 = size + 0x494 relation holds for both). They all sit
+outside the signed region: the RSA signature and the SIMGHDR stored hash cover
+only the code, and the block sits after it, so stamping them does not touch the
+signature. After framing, the only header bytes that differ from the stock image
+are the SHA and the size fields, which must differ because the freshly compiled
+code differs in size and content.
 
 ## Where the config comes from
 

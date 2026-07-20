@@ -107,6 +107,9 @@ build_variant() {
 		cp "$payload" "$out/u-boot-spl-16k.bin"
 		( cd "$out" && "$IHI_SECURE" u-boot-spl-16k.bin 0 0 >/dev/null )
 		"$SPRD_SIGN" "$out/u-boot-spl-16k-sign.bin" "$SIGN_CONFIG" pss >/dev/null
+		# Stamp the stock DHTB + SIMGHDR framing the BootROM expects. These
+		# fields are outside the signed region, so the signature stays valid.
+		python3 "$REPO_DIR/scripts/stock_frame.py" "$out/u-boot-spl-16k-sign.bin"
 		pad_to_part "$out/u-boot-spl-16k-sign.bin" "$img"
 	elif [ "$PACKER" = "dhtb" ]; then
 		python3 "$REPO_DIR/scripts/dhtb_pack.py" "$payload" "$img" "$PART_SIZE"
