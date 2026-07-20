@@ -139,6 +139,42 @@ zeros to the 4 MiB partition size. `scripts/dhtb_pack.py` reproduces this in
 pure Python for hosts without 32 bit multilib. Select it with
 `PACKER=dhtb ./build.sh`.
 
+## A/B slot support (reimplemented from the stock binary)
+
+The vendored chipram source predates this device's Android A/B conversion: its
+`nand_boot()` loaded non-slotted partitions (`uboot`, `sml`, `trustos`), which do
+not exist on this device (the real partitions are `uboot_a`/`uboot_b`,
+`sml_a`/`sml_b`, `trustos_a`/`trustos_b`, `teecfg_a`/`teecfg_b`). That is why an
+otherwise-correct build did not boot. The stock SPL was fully disassembled and
+the missing behaviour reimplemented in `chipram/nand_spl/emmc_boot.c` to match it:
+
+- **Slot selection** (`spl_select_slot`): reads the `misc` partition and parses
+  the Android `bootloader_control` block at offset 0x800 (magic `0x42414342`),
+  choosing the highest-priority bootable slot. On this device that resolves to
+  slot **B**, matching the BCB's stored suffix. Verified byte-for-byte against
+  the stock selector and against the real `misc` dump.
+- **Slotted names**: `teecfg_<slot>`, `sml_<slot>`, `trustos_<slot>`,
+  `uboot_<slot>` are loaded in the stock order (teecfg, sml, trustos, then uboot
+  last).
+- **Load addresses** taken from the stock binary: SML `0x94000000`, TRUSTOS
+  `0x94060000` (the vendored config had the wrong `0x94020000`), TEECFG
+  `0x94040000`, u-boot `0x9f000000`.
+- **SML handoff ABI**: enters SML at `0x94000000` with `x0` = trustos base
+  (`0x94060000`) and `x1` = teecfg base (`0x94040000`), exactly like stock.
+- **Dual-backup removed** (`#undef CONFIG_DUAL_BACKUP`): stock has no `*_bak`
+  partitions, and the old path ran an `sprd_hash_check` on u-boot that would have
+  rejected a patched u-boot. The remaining secure-path fallbacks now target the
+  other A/B slot instead of `*_bak`.
+
+If `misc`/BCB is unreadable the selector falls back to the BCB's advisory suffix,
+and if that is unavailable it defaults to slot B (this device's shipped active
+slot); both slots always exist, so it never targets a missing partition.
+
+Not reimplemented (deliberate, not boot-blocking): the Virtual-A/B
+`merge_status` snapshot-merge fast path, and the teecfg-derived
+`sprd_firewall_config_attr` sizing on the secure variant (the vendored
+`get_tos_size` uses an older teecfg layout that does not match this device).
+
 ## Compatibility with the stock spl_a.img
 
 The stock `spl_a.img` from this device was examined byte for byte. Findings:

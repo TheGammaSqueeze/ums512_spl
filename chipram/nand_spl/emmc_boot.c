@@ -312,6 +312,120 @@ unsigned int get_tos_size(void)
 }
 #endif
 
+/*
+ * A/B slot selection.
+ *
+ * This device is an Android A/B target: the real partitions are named
+ * uboot_a/uboot_b, sml_a/sml_b, trustos_a/trustos_b, teecfg_a/teecfg_b. The
+ * active slot is chosen from the Android bootloader_control block (BCB) that
+ * lives at byte offset 0x800 inside the misc partition. This mirrors the stock
+ * SPL slot selector.
+ */
+#define BCB_MISC_OFFSET   0x800
+#define BCB_MAGIC         0x42414342
+
+struct spl_slot_metadata {
+	uint8 byte0;   /* bits0-3 priority, bits4-6 tries_remaining, bit7 successful */
+	uint8 byte1;   /* bit0 verity_corrupted / unbootable */
+};
+
+struct spl_bootloader_control {
+	char   slot_suffix[4];
+	uint32 magic;
+	uint8  version;
+	uint8  nb_and_flags;   /* nb_slots = value & 7 */
+	uint8  recovery_tries;
+	uint8  merge_status;
+	struct spl_slot_metadata slot_info[4];
+};
+
+static char  g_slot_suffix[3] = "_a";
+static uint8 g_misc_buf[0x1000] __attribute__((aligned(8)));
+static uchar g_name_buf[24];
+
+/*
+ * Read misc, parse the BCB and return the highest-priority bootable slot:
+ * 0 for "_a", 1 for "_b", or -1 if misc/BCB is invalid. Selection rule matches
+ * the stock SPL: skip corrupted or out-of-tries slots, then pick by priority,
+ * then successful_boot, then tries_remaining.
+ */
+static int spl_select_slot(void)
+{
+	block_dev_desc_t *dev = get_dev();
+	struct spl_bootloader_control *bcb;
+	int i, best = -1, n;
+
+	if (dev == NULL)
+		return -1;
+	if (0 != read_common_partition(dev, (uchar *)"misc", 0, sizeof(g_misc_buf), g_misc_buf))
+		return -1;
+
+	bcb = (struct spl_bootloader_control *)(g_misc_buf + BCB_MISC_OFFSET);
+	if (bcb->magic != BCB_MAGIC)
+		return -1;
+	if (bcb->version > 1)
+		return -1;
+
+	n = bcb->nb_and_flags & 7;
+	if (n > 4)
+		n = 4;
+
+	for (i = 0; i < n; i++) {
+		uint8 b0 = bcb->slot_info[i].byte0;
+		uint8 b1 = bcb->slot_info[i].byte1;
+
+		if (b1 & 1)                 /* corrupted / unbootable */
+			continue;
+		if (((b0 >> 4) & 7) == 0)   /* no tries remaining */
+			continue;
+		if (best < 0) {
+			best = i;
+		} else {
+			uint8 bb = bcb->slot_info[best].byte0;
+			int pi = b0 & 0xf, pb = bb & 0xf, diff;
+
+			if (pi != pb) {
+				diff = pb - pi;
+			} else {
+				int si = (b0 >> 7) & 1, sb = (bb >> 7) & 1;
+
+				if (si != sb)
+					diff = sb - si;
+				else
+					diff = ((bb >> 4) & 7) - ((b0 >> 4) & 7);
+			}
+			if (diff < 0)
+				best = i;
+		}
+	}
+	if (best < 0) {
+		/* Valid BCB but no slot won on priority: trust the advisory suffix. */
+		return (bcb->slot_suffix[1] == 'b') ? 1 : 0;
+	}
+	return best;
+}
+
+/* Build "<base><suffix>" (e.g. "uboot" + "_b") into the shared name buffer. */
+static uchar *spl_slot_name(const char *base, const char *suffix)
+{
+	int i = 0;
+
+	while (base[i]) {
+		g_name_buf[i] = (uchar)base[i];
+		i++;
+	}
+	g_name_buf[i]     = (uchar)suffix[0];
+	g_name_buf[i + 1] = (uchar)suffix[1];
+	g_name_buf[i + 2] = 0;
+	return g_name_buf;
+}
+
+/* Suffix of the inactive slot, used as the redundancy fallback on this A/B device. */
+static const char *spl_other_suffix(void)
+{
+	return (g_slot_suffix[1] == 'b') ? "_a" : "_b";
+}
+
 void nand_boot(void)
 {
 	int ret;
@@ -372,26 +486,35 @@ void nand_boot(void)
 #endif
 #ifdef CONFIG_LOAD_PARTITION
 		if(TRUE == Emmc_Init()){
+			{
+				int slot = spl_select_slot();
+				if (slot < 0)
+					slot = 1;   /* misc/BCB unreadable: default to the slot this device
+					             * ships active (_b). Both slots exist, so this never
+					             * targets a missing partition; the BCB normally decides. */
+				g_slot_suffix[1] = slot ? 'b' : 'a';
+			}
 #if CONFIG_SMLBOOT// whale
-			load_partition_with_header("sml", SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
-			load_partition_with_header("trustos", TOS_LOAD_MAX_SIZE,CONFIG_TOS_LDADDR_START,(sys_img_header*)(CONFIG_TOS_LDADDR_START-IMAGE_HEAD_SIZE));
+			load_partition_with_header(spl_slot_name("sml", g_slot_suffix), SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
+			load_partition_with_header(spl_slot_name("trustos", g_slot_suffix), TOS_LOAD_MAX_SIZE,CONFIG_TOS_LDADDR_START,(sys_img_header*)(CONFIG_TOS_LDADDR_START-IMAGE_HEAD_SIZE));
 #endif
 
 			if (!sysdump_security) {  //sysdump mode (tos panic) don't load tos and sml
-#ifdef CONFIG_LOAD_TOS_ALONE
-				load_partition_with_header("trustos", TOS_LOAD_MAX_SIZE,CONFIG_TOS_LDADDR_START,(sys_img_header*)(CONFIG_TOS_LDADDR_START-IMAGE_HEAD_SIZE));
-#endif
-
-#ifdef CONFIG_TEECFG_CUSTOM
-				load_partition_with_header("teecfg", TEECFG_LOAD_MAX_SIZE, CONFIG_TEECFG_LDADDR_START, (sys_img_header *)(CONFIG_TEECFG_LDADDR_START - IMAGE_HEAD_SIZE));
+#ifdef CONFIG_TEECFG_LDADDR_START
+				/* teecfg carries the secure-world memory map; stock loads it first and passes it to SML */
+				load_partition_with_header(spl_slot_name("teecfg", g_slot_suffix), TEECFG_LOAD_MAX_SIZE, CONFIG_TEECFG_LDADDR_START, (sys_img_header *)(CONFIG_TEECFG_LDADDR_START - IMAGE_HEAD_SIZE));
 #endif
 
 #ifdef CONFIG_LOAD_ATF
-				load_partition_with_header("sml", SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
+				load_partition_with_header(spl_slot_name("sml", g_slot_suffix), SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
+#endif
+
+#ifdef CONFIG_LOAD_TOS_ALONE
+				load_partition_with_header(spl_slot_name("trustos", g_slot_suffix), TOS_LOAD_MAX_SIZE,CONFIG_TOS_LDADDR_START,(sys_img_header*)(CONFIG_TOS_LDADDR_START-IMAGE_HEAD_SIZE));
 #endif
 			}
 
-			load_partition_with_header("uboot",CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ));
+			load_partition_with_header(spl_slot_name("uboot", g_slot_suffix),CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ));
 
 #ifdef CONFIG_MOBILEVISOR
 		sysdump_mode = bootmode_check_sysdump();
@@ -451,7 +574,7 @@ void nand_boot(void)
 	/*no sec boot ,dual-backup*/
 #ifdef CONFIG_SMLBOOT
 	if(0 != sprd_hash_check((uint8_t*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE))){
-		load_partition_with_header("sml_bak", SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
+		load_partition_with_header(spl_slot_name("sml", spl_other_suffix()), SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
 		if(0 != sprd_hash_check((uint8_t*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE)))
 			while(1);//sml hash check fail
 	}
@@ -501,7 +624,7 @@ void nand_boot(void)
 		if(SECBOOT_VERIFY_SUCCESS != (secboot_verify(IRAM_BEGIN,(CONFIG_SML_LDADDR_START - IMAGE_HEAD_SIZE),NULL,NULL,SECURE_BOOT)))
 		{
 			/***secboot sml dual_backup***/
-			load_partition_with_header("sml_bak", SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
+			load_partition_with_header(spl_slot_name("sml", spl_other_suffix()), SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
 			if(SECBOOT_VERIFY_SUCCESS != (secboot_verify(IRAM_BEGIN,(CONFIG_SML_LDADDR_START - IMAGE_HEAD_SIZE),NULL,NULL,SECURE_BOOT)))
 			{
 				while(1);
@@ -528,8 +651,8 @@ void nand_boot(void)
 #if defined(CONFIG_SMLBOOT)|| defined(CONFIG_LOAD_TOS_ALONE)
 		if(SECBOOT_VERIFY_SUCCESS != (secboot_verify(IRAM_BEGIN,(CONFIG_TOS_LDADDR_START - IMAGE_HEAD_SIZE),NULL,NULL,SECURE_BOOT)))
 		{
-			/***secboot tos dual_backup***/
-			load_partition_with_header("trustos_bak", TOS_LOAD_MAX_SIZE,CONFIG_TOS_LDADDR_START,(sys_img_header*)(CONFIG_TOS_LDADDR_START-IMAGE_HEAD_SIZE));
+			/***secboot tos: fall back to the other A/B slot***/
+			load_partition_with_header(spl_slot_name("trustos", spl_other_suffix()), TOS_LOAD_MAX_SIZE,CONFIG_TOS_LDADDR_START,(sys_img_header*)(CONFIG_TOS_LDADDR_START-IMAGE_HEAD_SIZE));
 			if(SECBOOT_VERIFY_SUCCESS != (secboot_verify(IRAM_BEGIN,(CONFIG_TOS_LDADDR_START - IMAGE_HEAD_SIZE),NULL,NULL,SECURE_BOOT)))
 			{
 				while(1);
@@ -558,8 +681,8 @@ void nand_boot(void)
 #endif
     if(SECBOOT_VERIFY_SUCCESS != (secboot_verify(IRAM_BEGIN,(CONFIG_SYS_NAND_U_BOOT_DST - SECURE_HEADER_OFF),NULL,NULL,SECURE_BOOT)))
     {
-      /***secboot uboot dual_backup***/
-      load_partition_with_header("uboot_bak",CONFIG_SYS_EMMC_U_BOOT_SECTOR_NUM*EMMC_SECTOR_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - EMMC_SECTOR_SIZE));
+      /***secboot uboot: fall back to the other A/B slot***/
+      load_partition_with_header(spl_slot_name("uboot", spl_other_suffix()),CONFIG_SYS_EMMC_U_BOOT_SECTOR_NUM*EMMC_SECTOR_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - EMMC_SECTOR_SIZE));
       if(SECBOOT_VERIFY_SUCCESS != (secboot_verify(IRAM_BEGIN,(CONFIG_SYS_NAND_U_BOOT_DST - SECURE_HEADER_OFF),NULL,NULL,SECURE_BOOT)))
         {
          while(1);
@@ -654,7 +777,12 @@ if (!sysdump_mode)
 #if (CONFIG_LOAD_TOS_ALONE == 1) && !defined (CONFIG_ATF_BOOT_TOS)
 	secure_sp_entry(CONFIG_TOS_LDADDR_START,CONFIG_SYS_NAND_U_BOOT_START);
 #else
+#if defined(CONFIG_LOAD_ATF) && defined(CONFIG_TEECFG_LDADDR_START)
+	/* Enter SML/ATF with x0 = trustos base, x1 = teecfg base, matching stock. */
+	((void (*)(unsigned long, unsigned long))uboot)(CONFIG_TOS_LDADDR_START, CONFIG_TEECFG_LDADDR_START);
+#else
 	(*uboot) ();
+#endif
 #endif
 #endif
 }
