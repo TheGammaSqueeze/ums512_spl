@@ -701,6 +701,14 @@ if (!sysdump_mode)
 #endif
 
 
+#ifdef CONFIG_SPL_JUMP_UBOOT_DIRECT
+	/* Diagnostic: skip the SML/secure-world handoff and jump straight to u-boot.
+	 * If the panel lights and the logo appears, DDR init + image load worked and
+	 * the hang is in the secure-world (SML) handoff. If it stays black, the hang
+	 * is earlier (DDR init or the image load). */
+	((void (*)(void))(void *)CONFIG_SYS_NAND_U_BOOT_START)();
+	while (1);
+#endif
 #if CONFIG_SMLBOOT || CONFIG_LOAD_ATF
 	if (!sysdump_security) {
 		uboot = (void *)CONFIG_SML_LDADDR_START;

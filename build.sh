@@ -47,6 +47,7 @@ case "$VARIANTS" in
 	secure)      VARIANTS="secure" ;;
 	signed)      VARIANTS="signed" ;;
 	signed-open) VARIANTS="signed-open" ;;
+	diag)        VARIANTS="diag" ;;
 	all)         VARIANTS="nosec secure signed signed-open" ;;
 	*) echo "usage: $0 [nosec|secure|signed|signed-open|all]"; exit 2 ;;
 esac
@@ -98,11 +99,12 @@ build_variant() {
 	nosec)         frag="$REPO_DIR/board/${BOARD}.nosec.config" ;;   # secboot off, unsigned
 	secure|signed) frag="$REPO_DIR/board/${BOARD}.secure.config" ;;  # secboot on, real RSA verify
 	signed-open)   frag="$REPO_DIR/board/${BOARD}.open.config" ;;    # secboot on, RSA checks stubbed
+	diag)          frag="$REPO_DIR/board/${BOARD}.diag.config" ;;    # diagnostic: skip SML, jump uboot direct
 	esac
 
 	payload="$(compile_spl "$out" "$frag")"
 
-	if [ "$variant" = "signed" ] || [ "$variant" = "signed-open" ]; then
+	if [ "$variant" = "signed" ] || [ "$variant" = "signed-open" ] || [ "$variant" = "diag" ]; then
 		# Factory flow: imgheaderinsert in secure mode (arg 0 = secure, 0 = keep
 		# original), then sprd_sign with rsa2048_0 (pss), then pad.
 		cp "$payload" "$out/u-boot-spl-16k.bin"
