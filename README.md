@@ -13,6 +13,37 @@ writes both.
 Everything needed to build is in this repo. The only external dependency is an
 aarch64 cross compiler, installed by `scripts/setup-toolchain.sh`.
 
+## Recommended path: binary-patch the stock SPL
+
+The from-source build below is faithful and educational, but the **reliable**
+way to get a working "open" SPL on this device is to binary-patch the stock
+`spl_a.img`, because:
+
+- **This device does not validate the SPL's RSA signature.** Proven: the
+  on-device working `spl_a_patched.img` carries the *stale* signature copied
+  verbatim from stock (identical signature bytes) over *different* code, with
+  only the DHTB payload hash recomputed, and it boots. The BootROM checks the
+  DHTB hash, not the RSA signature. So no valid signature is needed.
+- The stock SPL already does everything correctly (DDR init, the secure-DDR
+  firewall, A/B slot selection from misc). The only change needed to run a
+  patched or self-built u-boot is to disable the four RSA image checks
+  (teecfg / sml / trustos / uboot) it performs before jumping.
+
+`scripts/patch_stock_spl.py` does exactly that: it finds the four
+`bl secboot_verify ; cbz w0 ; mov w0,#5 ; bl error` sequences (by the invariant
+`cbz w0 ; mov w0,#5` pair), NOPs them, and recomputes the DHTB and SIMGHDR
+hashes. Its output is **byte-for-byte identical** to the known-good on-device
+`spl_a_patched.img`.
+
+```sh
+# you provide the stock spl_a.img pulled from the device or PAC
+python3 scripts/patch_stock_spl.py stock_spl_a.img spl_open.img
+# flash spl_open.img to both spl_a and spl_b
+```
+
+This is the recommended image to flash. The from-source variants below are an
+alternative that reproduces the same behaviour by recompiling.
+
 ## Layout
 
 ```
