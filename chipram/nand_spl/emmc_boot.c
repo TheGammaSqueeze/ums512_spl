@@ -490,7 +490,7 @@ void nand_boot(void)
 #ifdef CONFIG_LOAD_PARTITION
 		if(TRUE == Emmc_Init()){
 #ifdef CONFIG_SPL_VIBRATE_MARKERS
-			spl_buzz(3);   /* marker 3 (THREE buzzes): eMMC init OK (past DDR, into nand_boot) */
+			spl_buzz(6);   /* 6 buzzes: eMMC init OK (past DDR) */
 #endif
 			{
 				int slot = spl_select_slot();
@@ -522,7 +522,7 @@ void nand_boot(void)
 
 			load_partition_with_header(spl_slot_name("uboot", g_slot_suffix),CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ));
 #ifdef CONFIG_SPL_VIBRATE_MARKERS
-			spl_buzz(4);   /* marker 4 (FOUR buzzes): all images (incl u-boot) loaded, about to verify/jump */
+			spl_buzz(7);   /* 7 buzzes: all images loaded, about to verify/jump */
 #endif
 
 #ifdef CONFIG_MOBILEVISOR
