@@ -851,6 +851,9 @@ void sw_dfs_go(u32 fn)
 	reg_bit_set(DFS_SW_CTRL, 1, 1,0x0);//pub_dfs_sw_req
 }
 
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+extern void spl_buzz(int count);
+#endif
 void ddrc_train_seq(u32 ddr_mode,u32 train_top_clk)
 {
 	u32 fn,start_train_fn,end_train_fn,ddr_clk;
@@ -871,6 +874,13 @@ void ddrc_train_seq(u32 ddr_mode,u32 train_top_clk)
 		}
 		if(0==((ddr_mode>>(8+fn))&0x1))
 		{
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+			/* One buzz per trained frequency, at the top of the iteration.
+			 * fn=2:512M->1, 3:768M->2, 4:1024M->3, 5:1333M->4, 6:1536M->5,
+			 * 7:1866M->6. Highest count heard names the frequency whose
+			 * training (voltage set / dmc_phy_train / bist) hangs. */
+			spl_buzz(fn - 1);
+#endif
 			if(ddr_clk >= DDR_CLK_1333M)/*Deal with Special freq dfs */
 			{
 				/*Transform VDDCORE*/
@@ -1545,9 +1555,6 @@ void sdram_init()
 
 	/*axi port clk always on*/
 	pub_axi_port_lowpower_close();
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(1);   /* 1: entered sdram_init (DDR start) */
-#endif
 
 #ifdef DDR_SCAN_ENABLE
 	u32 freq_index;
@@ -1584,34 +1591,22 @@ void sdram_init()
 #endif
 	/*zq calibration*/
 	ddrc_zqc_seq();
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(2);   /* 2: ZQ calibration done */
-#endif
 
 	/*pinmux setting*/
 	ddrc_phy_pinmux_set();
 
 	/*dram init at a low frequency*/
 	dram_init_from_low_freq(BOOT_FREQ_POINT);
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(3);   /* 3: dram_init_from_low_freq done (DRAM up at low freq) */
-#endif
 
 	//loop_get_tdqs2dq();
 	/*dram size auto-detect and include Manual setting mode */
 	dram_size_auto_detect();
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(4);   /* 4: dram_size_auto_detect done (DRAM readable) */
-#endif
 
 	/*DFS pre setting,from pure sw dfs to sw dfs*/
 	sw_dfs_pre_set(BOOT_FREQ_POINT);
 
 	/*According MR5,MR6,MR7(Manufacturer ID) limit Top freq(variable:train_high_point) */
 	dram_freq_auto_detect(&train_high_point);
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(5);   /* 5: dram_freq_auto_detect (MR read) done */
-#endif
 
 	//close dbi
 	ddrc_dbi_close();
@@ -1620,9 +1615,6 @@ void sdram_init()
 	Start freq:Global Variable:LP3_TRAIN_START_FN and LP4_TRAIN_START_FN
 	ddr mode:bit8~bit15 map fn0~fn7 training enable flag (0:Enable 1:Disable)*/
 	ddrc_train_seq(ddr_mode,train_high_point);//ddr_mode->represent ddr training freq
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(6);   /* 6: DDR training (ddrc_train_seq) done */
-#endif
 
 	/*target frequency point*/
 	ddrc_target_point_set(&target_ddr_clk, train_high_point);
