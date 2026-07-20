@@ -647,6 +647,45 @@ void enable_auto_gate_for_lp(void)
 	spl_ana_clk_config(300000);
 }
 
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+/*
+ * Progress markers via the sc2730 vibrator motor.
+ *
+ * No UART/serial is available on this board, so use the haptic motor as a
+ * physical, DDR-independent progress signal. ANA_REG_GLB_VIBR_CTRL0 lives at
+ * ADI slave 0x32120000 + 0xC00 (GLB) + 0x390. Setting the LDO voltage and
+ * clearing the two power-down bits (13, 14) turns the motor on. Driven over the
+ * ADI bus, which is up right after sci_adi_init(), well before DDR. Call
+ * spl_buzz(n) to pulse the motor n times; count the pulses to see how far the
+ * SPL got before it hung.
+ *
+ * sc2730 GLB base is ADISLAVE + 0x1800 (confirmed against the u-boot vibrator
+ * and the DT node vibrator@1b90), so VIBR_CTRL0 = 0x32120000 + 0x1800 + 0x390.
+ */
+#define SPL_VIBR_CTRL0  (0x32120000 + 0x1800 + 0x390)
+
+static void spl_delay(volatile unsigned int n)
+{
+	while (n--)
+		__asm__ volatile("nop");
+}
+
+void spl_buzz(int count)
+{
+	int k;
+
+	for (k = 0; k < count; k++) {
+		sci_adi_write(SPL_VIBR_CTRL0, 0xB4, 0xFF);                 /* LDO voltage */
+		sci_adi_write(SPL_VIBR_CTRL0, 0, (1u << 13) | (1u << 14)); /* clear PD -> ON */
+		spl_delay(300000000);   /* ~0.3-3s on depending on core clock */
+		sci_adi_write(SPL_VIBR_CTRL0, (1u << 13) | (1u << 14),
+			      (1u << 13) | (1u << 14));                    /* PD -> OFF */
+		spl_delay(300000000);
+	}
+	spl_delay(900000000);   /* long gap so pulse groups are countable */
+}
+#endif
+
 static void rco100m_config()
 {
 	/* rco default controlled by aon reg */
@@ -760,10 +799,16 @@ void Chip_Init (void) /*lint !e765 "Chip_Init" is used by init.s entry.s*/
 	pll_sel_cfg();
 	regulator_init();
 	soc_voltage_init();
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(1);   /* marker 1: PMIC/ADI/regulators up (pre-DDR) */
+#endif
 	mcu_init();
 	enable_auto_gate_for_lp();
 	sc27xx_adc_init();
 	sdram_init();
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(1);   /* marker 2: DDR init + all of Chip_Init done */
+#endif
 	sprd_write_efuse_to_ram();
 	sprd_log();
 	apcpu_pmu_clk_cfg_sel();
