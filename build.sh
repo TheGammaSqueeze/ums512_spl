@@ -4,13 +4,18 @@
 # flashable spl_a style image (512 byte DHTB header + payload, padded to 4 MiB).
 #
 # Variants:
-#   nosec   CONFIG_SECBOOT off, unsigned. Boots on a unit that is not fused.
-#   secure  CONFIG_SECBOOT on, unsigned. For inspection or self signing.
-#   signed  CONFIG_SECBOOT on, then RSA-2048 signed with rsa2048_0 using the
-#           stock sprd_sign tool. This is the variant a fused unit expects.
+#   nosec        CONFIG_SECBOOT off, unsigned. Boots on a unit that is not fused.
+#   secure       CONFIG_SECBOOT on, unsigned. For inspection or self signing.
+#   signed       CONFIG_SECBOOT on, then RSA-2048 signed with rsa2048_0. Stock
+#                equivalent: a fused unit accepts it, but it verifies and so
+#                rejects an unsigned or patched u-boot.
+#   signed-open  CONFIG_SECBOOT off, then RSA-2048 signed with rsa2048_0. The
+#                BootROM accepts it (signature valid) AND the SPL does not verify
+#                the next stage, so it boots a patched or unsigned u-boot. Works
+#                on both fused and unfused units. This is the modding image.
 #
 # Usage:
-#   ./build.sh [nosec|secure|signed|all]     (default: all)
+#   ./build.sh [nosec|secure|signed|signed-open|all]     (default: all)
 #
 # Environment overrides:
 #   CROSS_COMPILE   cross compiler prefix   (default: aarch64-linux-gnu-)
@@ -38,11 +43,12 @@ SIGN_CONFIG="$REPO_DIR/tools/sign-config"
 
 VARIANTS="${1:-all}"
 case "$VARIANTS" in
-	nosec)  VARIANTS="nosec" ;;
-	secure) VARIANTS="secure" ;;
-	signed) VARIANTS="signed" ;;
-	all)    VARIANTS="nosec secure signed" ;;
-	*) echo "usage: $0 [nosec|secure|signed|all]"; exit 2 ;;
+	nosec)       VARIANTS="nosec" ;;
+	secure)      VARIANTS="secure" ;;
+	signed)      VARIANTS="signed" ;;
+	signed-open) VARIANTS="signed-open" ;;
+	all)         VARIANTS="nosec secure signed signed-open" ;;
+	*) echo "usage: $0 [nosec|secure|signed|signed-open|all]"; exit 2 ;;
 esac
 
 # --- sanity checks ----------------------------------------------------------
@@ -89,13 +95,13 @@ build_variant() {
 
 	local frag payload img="$out/spl_a_${variant}.img"
 	case "$variant" in
-	nosec)  frag="$REPO_DIR/board/${BOARD}.nosec.config" ;;
-	*)      frag="$REPO_DIR/board/${BOARD}.secure.config" ;;   # secure and signed
+	nosec|signed-open) frag="$REPO_DIR/board/${BOARD}.nosec.config" ;;   # secboot off
+	secure|signed)     frag="$REPO_DIR/board/${BOARD}.secure.config" ;;  # secboot on
 	esac
 
 	payload="$(compile_spl "$out" "$frag")"
 
-	if [ "$variant" = "signed" ]; then
+	if [ "$variant" = "signed" ] || [ "$variant" = "signed-open" ]; then
 		# Factory flow: imgheaderinsert in secure mode (arg 0 = secure, 0 = keep
 		# original), then sprd_sign with rsa2048_0 (pss), then pad.
 		cp "$payload" "$out/u-boot-spl-16k.bin"

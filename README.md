@@ -58,9 +58,16 @@ the SPL will reject them.
 
 | variant | CONFIG_SECBOOT | signed | use |
 | ------- | -------------- | ------ | --- |
-| nosec   | off            | no     | Unit that is not fused. SPL loads u-boot, sml, trustos with hash checks only, boots unsigned images. |
-| secure  | on             | no     | Inspection, or to sign yourself. SPL RSA verifies downstream images against fused keys. |
-| signed  | on             | yes    | Fused unit. Same as secure, then the SPL itself is RSA-2048 signed with rsa2048_0 so the BootROM accepts it. |
+| nosec       | off        | no     | Unit that is not fused. SPL loads u-boot, sml, trustos with hash checks only, boots unsigned images. |
+| secure      | on         | no     | Inspection, or to sign yourself. SPL RSA verifies downstream images against fused keys. |
+| signed      | on         | yes    | Fused unit, stock equivalent. RSA-2048 signed with rsa2048_0 so the BootROM accepts it, but it then verifies and rejects an unsigned or patched u-boot. |
+| signed-open | off        | yes    | The modding image. Signed so the BootROM accepts it on a fused unit, but secure boot is off so it boots a patched or unsigned u-boot. Works on both fused and unfused units. |
+
+Signing and secure boot are two independent things. Signing (the SIMGHDR + RSA
+block on the SPL image) decides whether the BootROM accepts the SPL, and only
+matters on a fused unit. CONFIG_SECBOOT decides whether the running SPL verifies
+the next stage (u-boot). signed-open is the useful combination for modding a
+fused unit: accepted by the BootROM, but it does not block your patched u-boot.
 
 ### Signing (signed variant)
 
