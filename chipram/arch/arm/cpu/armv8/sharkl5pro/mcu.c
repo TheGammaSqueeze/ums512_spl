@@ -590,8 +590,61 @@ void pll_sel_cfg(void)
 					    BIT_PMU_APB_CPPLL_CDMA2PMU_AUTO_SEL;
 }
 
+/*
+ * sc2730 PMIC analog (ANA) clock configuration.
+ *
+ * The stock SPL runs this in Chip_Init between mcu_init() and sc27xx_adc_init()
+ * (factory function at code addr 0xf638) to bring up a 300 MHz ANA clock before
+ * DDR init. Our vendored source shipped an empty enable_auto_gate_for_lp() in
+ * that slot, so the clock was never configured. Reimplemented byte-faithfully
+ * from the stock binary using our real ADI accessors. All register offsets are
+ * within the ADI slave window (SPRD_ADISLAVE_PHYS = 0x32120000).
+ */
+#define SPL_ADIS_BASE   0x32120000
+#define SPL_ADIS(off)   (SPL_ADIS_BASE + (off))
+
+/* stock 0xf544: program the ANA clock (enable / sel / Q15 frequency) */
+static void spl_ana_clk_set(u32 enable, u32 sel, u32 freq)
+{
+	sci_adi_raw_write(SPL_ADIS(0x60), 0xe551);        /* unlock */
+	if (sel == 0)
+		sci_adi_write(SPL_ADIS(0x48), 0, 1);          /* clear bit0 */
+	else if (sel == 1)
+		sci_adi_write(SPL_ADIS(0x48), 1, 0);          /* set bit0 */
+	if (enable) {
+		int to = 0x100000;
+		while ((sci_adi_read(SPL_ADIS(0x50)) & 0x10) && --to)
+			;                                         /* wait for lock (bit4) to clear */
+		sci_adi_raw_write(SPL_ADIS(0x44), (freq >> 16) & 0xffff);
+		sci_adi_raw_write(SPL_ADIS(0x40), freq & 0xffff);
+	}
+	if (enable == 1)
+		sci_adi_write(SPL_ADIS(0x48), 0xa, 0);        /* set bits 0xa */
+	else if (enable == 0)
+		sci_adi_write(SPL_ADIS(0x48), 0, 2);          /* clear bit1 */
+	sci_adi_raw_write(SPL_ADIS(0x60), 0x1aae);        /* re-lock */
+}
+
+/* stock 0xf638: configure the ANA clock to freq_khz (called with 300000) */
+static void spl_ana_clk_config(u32 freq_khz)
+{
+	u32 freq;
+
+	sci_adi_write(SPL_ADIS(0x1808), 4, 0);            /* set bit2 */
+	sci_adi_write(SPL_ADIS(0x1810), 4, 0);            /* set bit2 */
+	if (freq_khz <= 80) {
+		freq = 80;
+	} else {
+		u32 q = freq_khz / 1000, r = freq_khz % 1000;
+
+		freq = ((r << 15) / 1000) + (q << 15);        /* Q15 fixed point of MHz */
+	}
+	spl_ana_clk_set(1, 0, freq);
+}
+
 void enable_auto_gate_for_lp(void)
 {
+	spl_ana_clk_config(300000);
 }
 
 static void rco100m_config()
