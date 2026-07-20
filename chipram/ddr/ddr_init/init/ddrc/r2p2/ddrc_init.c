@@ -1517,6 +1517,10 @@ void loop_get_tdqs2dq()
 *train_high_point :Training Top DDR frequency (according ddr_mode set this variable)
 ***************************************************************************/
 uint32 scan_bist;
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+extern void spl_buzz(int count);
+#endif
+
 void sdram_init()
 {
 	dmc_print_str("\r\nSHARKL5pro ddr init...\r\n");
@@ -1541,6 +1545,9 @@ void sdram_init()
 
 	/*axi port clk always on*/
 	pub_axi_port_lowpower_close();
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(1);   /* 1: entered sdram_init (DDR start) */
+#endif
 
 #ifdef DDR_SCAN_ENABLE
 	u32 freq_index;
@@ -1577,22 +1584,34 @@ void sdram_init()
 #endif
 	/*zq calibration*/
 	ddrc_zqc_seq();
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(2);   /* 2: ZQ calibration done */
+#endif
 
 	/*pinmux setting*/
 	ddrc_phy_pinmux_set();
 
 	/*dram init at a low frequency*/
 	dram_init_from_low_freq(BOOT_FREQ_POINT);
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(3);   /* 3: dram_init_from_low_freq done (DRAM up at low freq) */
+#endif
 
 	//loop_get_tdqs2dq();
 	/*dram size auto-detect and include Manual setting mode */
 	dram_size_auto_detect();
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(4);   /* 4: dram_size_auto_detect done (DRAM readable) */
+#endif
 
 	/*DFS pre setting,from pure sw dfs to sw dfs*/
 	sw_dfs_pre_set(BOOT_FREQ_POINT);
 
 	/*According MR5,MR6,MR7(Manufacturer ID) limit Top freq(variable:train_high_point) */
 	dram_freq_auto_detect(&train_high_point);
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(5);   /* 5: dram_freq_auto_detect (MR read) done */
+#endif
 
 	//close dbi
 	ddrc_dbi_close();
@@ -1601,6 +1620,9 @@ void sdram_init()
 	Start freq:Global Variable:LP3_TRAIN_START_FN and LP4_TRAIN_START_FN
 	ddr mode:bit8~bit15 map fn0~fn7 training enable flag (0:Enable 1:Disable)*/
 	ddrc_train_seq(ddr_mode,train_high_point);//ddr_mode->represent ddr training freq
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(6);   /* 6: DDR training (ddrc_train_seq) done */
+#endif
 
 	/*target frequency point*/
 	ddrc_target_point_set(&target_ddr_clk, train_high_point);

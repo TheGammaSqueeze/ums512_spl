@@ -795,25 +795,11 @@ void Chip_Init (void) /*lint !e765 "Chip_Init" is used by init.s entry.s*/
 	pll_sel_cfg();
 	regulator_init();
 	soc_voltage_init();
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(1);   /* 1 buzz: regulators/voltage up */
-#endif
 	mcu_init();
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(2);   /* 2 buzzes: mcu_init done */
-#endif
 	enable_auto_gate_for_lp();
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(3);   /* 3 buzzes: PMIC ANA-clock config done (the code I added) */
-#endif
 	sc27xx_adc_init();
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(4);   /* 4 buzzes: ADC init done -> about to enter DDR init */
-#endif
+	/* buzz markers now live inside sdram_init() to localize the DDR sub-step */
 	sdram_init();
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(5);   /* 5 buzzes: DDR init SUCCEEDED */
-#endif
 	sprd_write_efuse_to_ram();
 	sprd_log();
 	apcpu_pmu_clk_cfg_sel();
