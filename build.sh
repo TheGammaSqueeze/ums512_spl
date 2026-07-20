@@ -95,8 +95,9 @@ build_variant() {
 
 	local frag payload img="$out/spl_a_${variant}.img"
 	case "$variant" in
-	nosec|signed-open) frag="$REPO_DIR/board/${BOARD}.nosec.config" ;;   # secboot off
-	secure|signed)     frag="$REPO_DIR/board/${BOARD}.secure.config" ;;  # secboot on
+	nosec)         frag="$REPO_DIR/board/${BOARD}.nosec.config" ;;   # secboot off, unsigned
+	secure|signed) frag="$REPO_DIR/board/${BOARD}.secure.config" ;;  # secboot on, real RSA verify
+	signed-open)   frag="$REPO_DIR/board/${BOARD}.open.config" ;;    # secboot on, RSA checks stubbed
 	esac
 
 	payload="$(compile_spl "$out" "$frag")"

@@ -32,6 +32,15 @@ imgToVerifyInfo img_verify_info = {0};
 SecBoot_Result_Ret secboot_verify(void *ptr,void *m,void *n,uint32_t data_len,SECURE_TYPE type)
 {
     SecBoot_Result_Ret ret = SECBOOT_VERIFY_SUCCESS;
+#ifdef CONFIG_SPL_SKIP_IMG_VERIFY
+    /*
+     * Boot with CONFIG_SECBOOT (so the secure-DDR firewall and secure world are
+     * set up like the stock SPL) but do NOT enforce the RSA signature of the
+     * images it loads (sml, trustos, teecfg, uboot). This lets a patched or
+     * self-built u-boot boot while keeping everything else identical to stock.
+     */
+    return ret;
+#else
 #ifdef CONFIG_SPRD_SECBOOT
 	ret = sprd_secure_check((uint8_t *)ptr,(uint8_t *)m);
 #endif
@@ -43,6 +52,7 @@ SecBoot_Result_Ret secboot_verify(void *ptr,void *m,void *n,uint32_t data_len,SE
 #endif
 
     return ret;
+#endif /* CONFIG_SPL_SKIP_IMG_VERIFY */
 }
 /*************************************************************************
  *dl_secure_verify: verify function in download process

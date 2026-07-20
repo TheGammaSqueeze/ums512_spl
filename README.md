@@ -58,16 +58,29 @@ the SPL will reject them.
 
 | variant | CONFIG_SECBOOT | signed | use |
 | ------- | -------------- | ------ | --- |
-| nosec       | off        | no     | Unit that is not fused. SPL loads u-boot, sml, trustos with hash checks only, boots unsigned images. |
-| secure      | on         | no     | Inspection, or to sign yourself. SPL RSA verifies downstream images against fused keys. |
-| signed      | on         | yes    | Fused unit, stock equivalent. RSA-2048 signed with rsa2048_0 so the BootROM accepts it, but it then verifies and rejects an unsigned or patched u-boot. |
-| signed-open | off        | yes    | The modding image. Signed so the BootROM accepts it on a fused unit, but secure boot is off so it boots a patched or unsigned u-boot. Works on both fused and unfused units. |
+| variant | CONFIG_SECBOOT | RSA image checks | signed | use |
+| ------- | -------------- | ---------------- | ------ | --- |
+| nosec       | off | n/a          | no  | Reference only. No secure-DDR firewall, will not complete boot on this secure device. |
+| secure      | on  | enforced     | no  | Inspection / self-sign. Full secure boot, verifies sml/trustos/teecfg/uboot. |
+| signed      | on  | enforced     | yes | Stock equivalent. Firewall + verify; boots only stock (correctly signed) images. |
+| signed-open | on  | **stubbed**  | yes | **The modding image.** Full secure-DDR firewall and secure-world bring-up like stock, but the four RSA image checks are stubbed so a patched or self-built u-boot boots. |
 
-Signing and secure boot are two independent things. Signing (the SIMGHDR + RSA
-block on the SPL image) decides whether the BootROM accepts the SPL, and only
-matters on a fused unit. CONFIG_SECBOOT decides whether the running SPL verifies
-the next stage (u-boot). signed-open is the useful combination for modding a
-fused unit: accepted by the BootROM, but it does not block your patched u-boot.
+Two independent things:
+
+- **Signing the SPL image** (the SIMGHDR + RSA block) decides whether the
+  **BootROM accepts the SPL**. Only matters on a fused unit. `rsa2048_0`.
+- **`CONFIG_SECBOOT`** turns on the SPL's own secure-world bring-up: the
+  `sprd_firewall_config_pre` secure-DDR firewall setup (`sml_teecfg_sec`,
+  `dmc_sec`, ...) that the SML/trustos secure world needs, plus the RSA checks of
+  the images it loads. The stock SPL is a `CONFIG_SECBOOT` build, so it does this
+  firewall setup. A build with secure boot **off** (the old `nosec`/`signed-open`)
+  skips it and the SML handoff hangs, which is why those did not boot.
+
+`signed-open` therefore keeps `CONFIG_SECBOOT` **on** (so the firewall/secure
+world is set up exactly like stock) but defines `CONFIG_SPL_SKIP_IMG_VERIFY`,
+which stubs `secboot_verify()` to always succeed. That skips the four RSA image
+checks (sml/trustos/teecfg/uboot) while everything else matches stock, so a
+patched u-boot boots.
 
 ### Signing (signed variant)
 
