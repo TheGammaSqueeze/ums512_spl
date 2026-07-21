@@ -21,8 +21,9 @@ typedef struct chipram_env {
 	u32 keep_charge;
 	u32 channel_sel;//usb,uart0,uart1
 	u32 cs_number;
-	u32 cs0_size;
-	u32 cs1_size;
+	u32 reserved0;
+	u64 cs0_size;
+	u64 cs1_size;
 	u32 reserved;
 }chipram_env_t;
 void chipram_env_set(u32 mode);

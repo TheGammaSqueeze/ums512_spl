@@ -1524,6 +1524,15 @@ uint32 scan_bist;
 extern void spl_buzz(int count);
 #endif
 
+#ifdef CONFIG_SPL_EMMC_TRACE
+/* Cold-vs-warm classification for the eMMC pre-jump state snapshot. Sampled at
+ * sdram_init entry, BEFORE wdg_rst_keep_sre() rewrites the chip-reset-control
+ * registers. Read by the snapshot writer in emmc_boot.c. */
+volatile u32 g_spl_reset_key = 0;
+volatile u32 g_spl_reset_status = 0;
+volatile u32 g_spl_boot_is_warm = 0;
+#endif
+
 void sdram_init()
 {
 	dmc_print_str("\r\nSHARKL5pro ddr init...\r\n");
@@ -1532,6 +1541,19 @@ void sdram_init()
 	//u32 target_ddr_clk=DDR_CLK_1024M;
 	u32 ddr_mode=mcu_clk_para.ddr_debug_mode.value;
 	//u32 ddr_mode=0xe300;
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(1);   /* STAGE 1: SPL running, DDR init started (Chip_Init reached DDR) */
+#endif
+
+#ifdef CONFIG_SPL_EMMC_TRACE
+	/* Capture the persistent reset-control state before wdg_rst_keep_sre() below
+	 * consumes and re-arms it. warm = the previous boot armed the controller and
+	 * the hardware entered self-refresh across the reset (STATUS force bits set). */
+	g_spl_reset_key = __raw_readl(CHIP_RESET_CONTROL_KEY);
+	g_spl_reset_status = __raw_readl(CHIP_RESET_CONTROL_STATUS);
+	g_spl_boot_is_warm = ((g_spl_reset_key == 0x5e486947)
+			&& ((g_spl_reset_status & 0x3) == 0x3)) ? 1 : 0;
+#endif
 
 #if defined(CONFIG_CHIPRAM_DDR_MAX_FREQ)
 	//mask DDR frequency points,0x1:masked
@@ -1681,6 +1703,6 @@ void sdram_init()
 	ddrc_lock();
 #endif
 #ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(1);   /* STAGE 1: DDR init fully complete (all training + finalization) */
+	spl_buzz(2);   /* STAGE 2: DDR init fully complete (all training + finalization) */
 #endif
 }

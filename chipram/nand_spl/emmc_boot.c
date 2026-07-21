@@ -104,6 +104,201 @@ int  load_common_partition(uchar * partition_name,uint32_t size, uint8_t* buf)
 	return 0;
 }
 
+#ifdef CONFIG_SPL_EMMC_TRACE
+/* ----------------------------------------------------------------------------
+ * Diagnostic: persist a verbose snapshot of the SPL's pre-jump hardware state to
+ * the uboot_log partition, so a cold-boot dump can be diffed against a
+ * warm-reboot dump to localize the warm-reboot hang. The SPL runs to completion
+ * on the failing reboot (it writes this, then jumps), so the snapshot survives
+ * even when SML/u-boot never come up. Enabled only in the diag build.
+ * -------------------------------------------------------------------------- */
+
+/* cold/warm state sampled early in sdram_init, before wdg_rst_keep_sre() runs */
+extern volatile u32 g_spl_reset_key;
+extern volatile u32 g_spl_reset_status;
+extern volatile u32 g_spl_boot_is_warm;
+
+#define SPL_TRACE_MAGIC   0x53504c44   /* 'SPLD' */
+#define SPL_TRACE_VER     0x00000005
+#define SPL_TRACE_SECTORS 4            /* 2048 bytes per snapshot slot */
+/* Store snapshots in the always-zero mid-region of uboot_log (1.5 MB in), well
+ * past u-boot's own circular log (first ~16 KB) so a successful boot does not
+ * clobber them. Ring of 16 slots keyed by reboot count: consecutive boots land
+ * in different slots, so the recovery boot after a failed warm reboot cannot
+ * overwrite the failed reboot's snapshot. */
+#define SPL_TRACE_BASE_SECTOR 3072     /* 0x180000 / 512 */
+#define SPL_TRACE_SLOT_STRIDE 8        /* sectors per slot */
+#define SPL_TRACE_NSLOTS      16
+
+/* known-mapped registers captured at the SML handoff (reads are non-disturbing) */
+static const uint32_t spl_trace_addrs[] = {
+	/* chip reset control (live re-read) + IRAM reboot markers */
+	0x32290000, 0x32290004, 0x32290008,
+	0x00015FF8, 0x00015FFC,
+	/* IRAM DDR debug scratch written by ddrc_init */
+	0x00003000, 0x00003004, 0x00003008, 0x0000300C,
+	0x00003010, 0x00003014, 0x00003018, 0x0000301C,
+	0x00003400, 0x00003404, 0x00003408, 0x0000340C,
+	/* PMU_APB sleep / retention / lowpower (0x327e0000 base) */
+	0x327e00F8, 0x327e00C8, 0x327e012C, 0x327e0130,
+	0x327e0250, 0x327e0230, 0x327e0338, 0x327e07B8,
+	0x327e00B0, 0x327e0058, 0x327e00CC,
+	/* AON_APB enables + reset cause (0x327d0000 base) */
+	0x327d0000, 0x327d0004, 0x327d000C, 0x327d0824, 0x327d002C,
+	/* DMC controller status/config (0x31000000 base) */
+	0x31000000, 0x31000004, 0x31000008, 0x3100000C, 0x31000010,
+	0x31000100, 0x31000104, 0x31000108, 0x3100010C, 0x31000110,
+	0x31000120, 0x31000140,
+	/* DMC PHY training-result sweep (0x31001000 base): DLL, DQS gate, per-byte
+	 * read/write delays computed during training. On a warm reboot DRAM is not
+	 * power-cycled, so these can diverge from cold even when DTMG/DLL config match. */
+	0x31001000, 0x31001040, 0x31001080, 0x310010C0,
+	0x31001100, 0x31001140, 0x31001180, 0x310011C0,
+	0x31001200, 0x31001240, 0x31001280, 0x310012C0,
+	0x31001300, 0x31001340, 0x31001380, 0x310013C0,
+	0x31001400, 0x31001440, 0x31001480, 0x310014C0,
+	0x31001500, 0x31001540, 0x31001580, 0x310015C0,
+	0x31001600, 0x31001640, 0x31001644, 0x31001680, 0x310016C0,
+	/* DDR DVFS / DFS frequency-scaling block (0x31053000/0x31054000). Prime warm
+	 * suspect: Android runs DDR DVFS, so a reboot-from-Android enters the SPL with
+	 * this hardware in a live scaled state, unlike cold or reboot-from-u-boot. */
+	0x31053404,   /* DMC_SOFT_RST_CTRL */
+	0x31054004,   /* DFS_CLK_INIT_SW_START */
+	0x31054008,   /* DFS_CLK_STATE */
+	0x3105400C,   /* DMC_CLK_INIT_CFG */
+	0x31054100,   /* DFS_PURE_SW_CTRL */
+	0x31054104,   /* DFS_SW_CTRL */
+	0x31054108,   /* DFS_SW_CTRL1 */
+	0x3105410C,   /* DFS_CLK_INIT_CFG */
+	0x31054114,   /* DFS_HW_CTRL */
+	/* secure firewall (0x32800000 base) + dynamic PUB catch-all segment
+	 * 0x3280c380 (stock programs this every boot from the DRAM-info at
+	 * CHIPRAM_ENV 0x82000000; our SPL never touches it, so Android's secure-world
+	 * value may persist across a from-Android reboot) */
+	0x32808000, 0x32808004, 0x32800064, 0x3280C000, 0x3280C004,
+	0x3280C380, 0x3280C384, 0x3280C388, 0x3280C38C,
+	0x3280C398, 0x3280C39C, 0x3280C3A8, 0x3280C3B8,
+	/* CHIPRAM_ENV DRAM-info struct (0x82000000): stock fills it, we don't */
+	0x82000008, 0x82000020, 0x82000028, 0x82000030,
+	/* AP + AON clock/reset enables the SPL leaves to Android (dirty on warm,
+	 * cold-reset on cold). Read from always-clocked enable regs, not the gated
+	 * peripherals themselves. */
+	0x20200068,   /* AP_CLK_CGM_CE_CFG (CE 2x) */
+	0x20100000,   /* AP_AHB_EB */
+	0x20100004,   /* AP_AHB_RST */
+	0x20200000,   /* AP_CLK_CGM base */
+	0x327d0008,   /* AON_APB_EB2 */
+	0x327d03f0,   /* AON_APB_DPU2DDR_SLI_LPC_CTRL */
+};
+
+static uint32_t spl_sum32(uint32_t base, uint32_t words)
+{
+	volatile uint32_t *p = (volatile uint32_t *)(unsigned long)base;
+	uint32_t s = 0, i;
+	for (i = 0; i < words; i++)
+		s = (s * 31u) + p[i];
+	return s;
+}
+
+static uint32_t spl_rd_sctlr(void)
+{ uint64_t v; __asm__ volatile("mrs %0, sctlr_el3" : "=r"(v)); return (uint32_t)v; }
+static uint32_t spl_rd_scr(void)
+{ uint64_t v; __asm__ volatile("mrs %0, scr_el3" : "=r"(v)); return (uint32_t)v; }
+static uint32_t spl_rd_vbar(void)
+{ uint64_t v; __asm__ volatile("mrs %0, vbar_el3" : "=r"(v)); return (uint32_t)v; }
+static uint32_t spl_rd_currentel(void)
+{ uint64_t v; __asm__ volatile("mrs %0, CurrentEL" : "=r"(v)); return (uint32_t)v; }
+static uint32_t spl_rd_daif(void)
+{ uint64_t v; __asm__ volatile("mrs %0, daif" : "=r"(v)); return (uint32_t)v; }
+
+static int write_common_partition(block_dev_desc_t *dev, uchar *partition_name,
+				  uint32_t offsetsector, uint32_t nsectors, uint8_t *buf)
+{
+	disk_partition_t info;
+
+	if (NULL == buf || NULL == dev)
+		return -1;
+	if (get_partition_info_by_name(dev, partition_name, &info))
+		return -1;
+	/* hard bound: never write outside the resolved partition [start, start+size) */
+	if ((offsetsector + nsectors) > (uint32_t)info.size)
+		return -1;
+	if (FALSE == Emmc_Write(PARTITION_USER, (uint32_t)info.start + offsetsector,
+				nsectors, buf))
+		return -1;
+	return 0;
+}
+
+void spl_emmc_trace_snapshot(void)
+{
+	static uint32_t buf[SPL_TRACE_SECTORS * 512 / 4] __attribute__((aligned(64)));
+	block_dev_desc_t *dev;
+	uint32_t i, idx = 0, n;
+	uint32_t slot, off;
+
+	dev = get_dev();
+	if (NULL == dev)
+		return;
+
+	n = sizeof(spl_trace_addrs) / sizeof(spl_trace_addrs[0]);
+
+	for (i = 0; i < (sizeof(buf) / 4); i++)
+		buf[i] = 0;
+
+	buf[idx++] = SPL_TRACE_MAGIC;
+	buf[idx++] = SPL_TRACE_VER;
+	buf[idx++] = g_spl_boot_is_warm ? 2 : 1;   /* 1 = cold, 2 = warm */
+	buf[idx++] = REG32(0x00015FFC);            /* live reboot count */
+	buf[idx++] = g_spl_reset_key;              /* early-sampled reset key */
+	buf[idx++] = g_spl_reset_status;           /* early-sampled reset status */
+	buf[idx++] = n + 9;                        /* total (addr,val) pairs below */
+	buf[idx++] = 0;                            /* reserved */
+
+	for (i = 0; i < n; i++) {
+		buf[idx++] = spl_trace_addrs[i];
+		buf[idx++] = REG32(spl_trace_addrs[i]);
+	}
+
+	/* image integrity: 4KB rolling sum of each loaded secure image + u-boot */
+	buf[idx++] = 0xF0000000; buf[idx++] = spl_sum32(0x94000000, 1024); /* SML    */
+	buf[idx++] = 0xF0000001; buf[idx++] = spl_sum32(0x94040000, 1024); /* TEECFG */
+	buf[idx++] = 0xF0000002; buf[idx++] = spl_sum32(0x94060000, 1024); /* TOS    */
+	buf[idx++] = 0xF0000010; buf[idx++] = spl_sum32(0x9F000000, 1024); /* u-boot */
+
+	/* CPU EL3 state inherited by SML */
+	buf[idx++] = 0xE0000000; buf[idx++] = spl_rd_sctlr();
+	buf[idx++] = 0xE0000001; buf[idx++] = spl_rd_scr();
+	buf[idx++] = 0xE0000002; buf[idx++] = spl_rd_vbar();
+	buf[idx++] = 0xE0000003; buf[idx++] = spl_rd_currentel();
+	buf[idx++] = 0xE0000004; buf[idx++] = spl_rd_daif();
+
+	/* Ring by reboot count in the u-boot-safe mid-region (see defines above). */
+	slot = REG32(0x00015FFC) & (SPL_TRACE_NSLOTS - 1u);
+	off  = SPL_TRACE_BASE_SECTOR + slot * SPL_TRACE_SLOT_STRIDE;
+
+	write_common_partition(dev, (uchar *)"uboot_log", off, SPL_TRACE_SECTORS,
+			       (uint8_t *)buf);
+
+	/* restore the eMMC SD clock to the off state the pre-jump path left it in */
+	Emmc_DisSdClk();
+}
+#endif /* CONFIG_SPL_EMMC_TRACE */
+
+#ifdef CONFIG_SPL_DRAM_SCRUB
+/* Diagnostic: zero a DRAM region before loading images into it. Tests whether a
+ * from-Android reboot hangs in SML because SML reads stale Android data left in
+ * DRAM (contents are preserved across the self-refresh-kept warm reset; a cold
+ * boot has benign fresh DRAM). Runs with caches off, so stores go straight to
+ * DRAM. The SPL itself lives in IRAM, so this cannot touch its own code/stack. */
+static void spl_dram_scrub(unsigned long base, unsigned long size)
+{
+	volatile unsigned long long *p = (volatile unsigned long long *)base;
+	unsigned long n = size / sizeof(*p), i;
+	for (i = 0; i < n; i++)
+		p[i] = 0ULL;
+}
+#endif
+
 int load_partition_with_header(uchar* partition, uint32_t img_max_size, uint8_t* img_buf, sys_img_header* pHeader)
 {
 	int  i, retrys = 5;
@@ -489,7 +684,7 @@ void nand_boot(void)
 #endif
 #ifdef CONFIG_LOAD_PARTITION
 #ifdef CONFIG_SPL_VIBRATE_MARKERS
-		spl_buzz(2);   /* STAGE 2: nand_boot + firewall_config_pre done, about to init eMMC */
+		spl_buzz(3);   /* STAGE 3: nand_boot + firewall_config_pre done, about to init eMMC */
 #endif
 		if(TRUE == Emmc_Init()){
 #ifdef CONFIG_SPL_VIBRATE_MARKERS
@@ -503,6 +698,11 @@ void nand_boot(void)
 					             * targets a missing partition; the BCB normally decides. */
 				g_slot_suffix[1] = slot ? 'b' : 'a';
 			}
+#ifdef CONFIG_SPL_DRAM_SCRUB
+			/* zero the secure region before loading SML/TOS/TEECFG on top, so
+			 * SML never sees Android's stale DRAM on a from-Android reboot */
+			spl_dram_scrub(CONFIG_SML_LDADDR_START, CONFIG_SEC_MEM_SIZE);
+#endif
 #if CONFIG_SMLBOOT// whale
 			load_partition_with_header(spl_slot_name("sml", g_slot_suffix), SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
 			load_partition_with_header(spl_slot_name("trustos", g_slot_suffix), TOS_LOAD_MAX_SIZE,CONFIG_TOS_LDADDR_START,(sys_img_header*)(CONFIG_TOS_LDADDR_START-IMAGE_HEAD_SIZE));
@@ -779,6 +979,18 @@ if (!sysdump_mode)
 		sprd_firewall_config();
 	}
 
+	/* Stock parity: select the crypto-engine (CE) 2X clock source
+	 * (REG_AP_CLK_CORE_CGM_CE_CFG @ 0x20200068, bits[1:0]=3) before handing off to
+	 * the secure world (SML/trustos), which uses the CE for crypto. Stock does this
+	 * write right before the SML jump; our older source omitted it. */
+	if ((REG32(0x20200068) & 0x3) != 0x3)
+		REG32(0x20200068) |= 0x3;
+
+#ifdef CONFIG_SPL_EMMC_TRACE
+	/* persist verbose pre-jump HW state to uboot_log for cold-vs-warm diffing */
+	spl_emmc_trace_snapshot();
+#endif
+
 #if defined(CONFIG_SCX35L64)
 #ifndef CONFIG_X86
 	chipram_env_set(BOOTLOADER_MODE_LOAD);
@@ -796,6 +1008,15 @@ if (!sysdump_mode)
 
 #ifdef CONFIG_SPL_VIBRATE_MARKERS
 	spl_buzz(6);   /* STAGE 6: DDR + images + firewall done, jumping to SML/secure world */
+#endif
+#ifdef CONFIG_SPL_DIAG_SKIP_SML
+	/* Diagnostic bisection: after the full, identical pre-jump setup, jump
+	 * straight to u-boot (0x9f000000) instead of SML. If the panel/logo comes up
+	 * on the failing (post-Android-shutdown) boot, the hang is in the SML/secure
+	 * handoff (RPMB / secure storage / secure-DDR provisioned by Android). If it
+	 * stays black, the hang is in DDR or code execution from DRAM, not SML. */
+	((void (*)(void))(void *)CONFIG_SYS_NAND_U_BOOT_START)();
+	while (1);
 #endif
 #if (CONFIG_LOAD_TOS_ALONE == 1) && !defined (CONFIG_ATF_BOOT_TOS)
 	secure_sp_entry(CONFIG_TOS_LDADDR_START,CONFIG_SYS_NAND_U_BOOT_START);

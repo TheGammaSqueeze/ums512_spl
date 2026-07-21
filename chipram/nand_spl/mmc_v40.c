@@ -1651,6 +1651,83 @@ PUBLIC BOOLEAN Emmc_Read(CARD_Partition_e  cardPartiton, uint32 startBlk,uint32 
 	return ret;
 }
 
+#ifdef CONFIG_SPL_EMMC_TRACE
+/*********************************************************************
+**	Description :
+**		Diagnostic-only eMMC write. Mirror of CARD_SDIO_ReadMultiBlock
+**		but issues CMD25 (WRITE_MULTIPLE_BLOCK). The transfer engine is
+**		direction-agnostic; write is selected by the s_cmdDetail row for
+**		CARD_CMD25_WRITE_MULTIPLE_BLOCK omitting TRANS_MODE_READ. Used to
+**		persist the SPL pre-jump state snapshot to the uboot_log partition.
+*********************************************************************/
+static BOOLEAN CARD_SDIO_WriteMultiBlock(CARD_Partition_e  cardPartiton,
+									SDIO_Hd_Ptr pHd,
+									uint32 startBlk,
+									uint32 num,
+									uint8* buf)
+{
+	uint8 rspBuf[16];
+	uint32 addr = startBlk;   /* sector addressing, matches the read path */
+	DATA_Param_t data;
+
+	data.blk_len = pHd->block_len;
+	data.blk_num = num;
+	data.data_buf = buf;
+
+	if (FALSE == IsCardReady(pHd))
+	{
+		return FALSE;
+	}
+
+	if(FALSE == CARD_SDIO_SetBlockLength(pHd, CARD_DATA_BLOCK_LEN))
+	{
+		return FALSE;
+	}
+
+	if(0 != SDIO_SendCmd(pHd, CARD_CMD25_WRITE_MULTIPLE_BLOCK, addr, &data, rspBuf))
+	{
+		SDIO_SendCmd(pHd, CARD_CMD12_STOP_TRANSMISSION, NULL, NULL, rspBuf);
+		return FALSE;
+	}
+	if(0 != SDIO_SendCmd(pHd, CARD_CMD12_STOP_TRANSMISSION, NULL, NULL, rspBuf))
+	{
+		return FALSE;
+	}
+	/* wait out the card programming (busy) window before returning */
+	if (FALSE == IsCardReady(pHd))
+	{
+		return FALSE;
+	}
+	return TRUE;
+}
+
+PUBLIC BOOLEAN Emmc_Write(CARD_Partition_e  cardPartiton, uint32 startBlk,uint32 num,uint8* buf)
+{
+	uint32 ret = 0;
+	uint32 count = 0;
+	uint8 rspBuf[16];
+
+	if (p_EmmcHd->cur_partition != cardPartiton)
+	{
+		if(0 != SDIO_SendCmd(p_EmmcHd,CARD_CMD13_SEND_STATUS, 1<<16,NULL,rspBuf))
+		{
+			return FALSE;
+		}
+
+		if ( FALSE == CARD_SDIO_SelCurPartition(p_EmmcHd, cardPartiton))
+		{
+			return FALSE;
+		}
+	}
+
+	do{
+		ret = CARD_SDIO_WriteMultiBlock(cardPartiton, p_EmmcHd, startBlk, num, buf);
+	}while((ret == FALSE) && (++count < 5));
+
+	return ret;
+}
+#endif /* CONFIG_SPL_EMMC_TRACE */
+
 PUBLIC void Emmc_DisSdClk(void )
 {
 	SDHOST_SdClk_Enable(p_EmmcHd, SDIO_OFF);

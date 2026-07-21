@@ -311,6 +311,44 @@ static void tos_sec (uint32_t tos_size)
 	REG32(&(mem_seg_addr->last_addr)) = (CONFIG_SML_LDADDR_START + CONFIG_SEC_MEM_SIZE + tos_size - 1 - 0x80000000)>>PUB_ADDR_SHIFT_BITS;
 }
 
+/* PUB memory-firewall segment 7 (0x3280C380): the "above top-of-DRAM" catch-all.
+ * Stock reprograms this every boot (nand_boot -> firewall_config_pre) to deny ALL
+ * bus masters (secure AND non-secure) the region from top-of-populated-DRAM up to
+ * 4GB, with the boundary derived from the detected DRAM size in CHIPRAM_ENV. The
+ * TZPC/mem-firewall block is always-on and NOT reset by a warm reset, so stock
+ * relies on rewriting it every boot. Our SPL never programmed it, so once Android's
+ * secure world (TOS) has touched this segment, our next boot left it stale - which
+ * only bites after Android has provisioned, matching the observed failure. */
+#define CHIPRAM_ENV_DRAM_SIZE_ADDR	(0x82000000 + 0x8)   /* u64 dram_size lo word */
+static void mem_top_catchall_sec (void)
+{
+	uint32_t i;
+	uint32_t dram_size;
+	sprd_mem_seg_cfg *seg_addr;
+
+	/* total DRAM bytes (cs0+cs1) that dmc_update_param_for_uboot wrote to
+	 * CHIPRAM_ENV during DDR init. Matches the value stock's catch-all uses. */
+	dram_size = REG32(CHIPRAM_ENV_DRAM_SIZE_ADDR);
+
+	/* Safety: a first_addr below the real top-of-DRAM would deny DRAM to every
+	 * master and hang instantly. The env dram_size on this device is a stable
+	 * 0xC0000000 (3GB); only program the catch-all when the env reports a
+	 * plausible size (>= 2GB), otherwise leave the segment untouched. */
+	if (dram_size < 0x80000000)
+		return;
+
+	seg_addr = (sprd_mem_seg_cfg *)((uint64_t)(SPRD_MEM_FW_PUB_BASE + MEM_FW_SEG_OFF + 7 * MEM_FW_SEG_LEN));
+	REG32(&(seg_addr->first_addr)) = 0xFFFFFFFF;   /* disable while reconfiguring */
+	for (i = 0; i < MST_ID_ARRAY_LEN; i++) {
+		REG32(&(seg_addr->mst_id_rd_sec[i]))  = 0x0;   /* deny every master */
+		REG32(&(seg_addr->mst_id_rd_nsec[i])) = 0x0;
+		REG32(&(seg_addr->mst_id_wr_sec[i]))  = 0x0;
+		REG32(&(seg_addr->mst_id_wr_nsec[i])) = 0x0;
+	}
+	REG32(&(seg_addr->last_addr))  = 0xFFFFFFFF;
+	REG32(&(seg_addr->first_addr)) = dram_size >> PUB_ADDR_SHIFT_BITS;
+}
+
 // special for sharkl5. Only setting slv_fw_aon1
 static void slv_fw_aon1_special (void) {
 	uint32_t val;
@@ -345,6 +383,10 @@ void sprd_firewall_config_pre (void)
 
 	dmc_sec();
 	sml_teecfg_sec();
+#ifdef CONFIG_SPL_FW_SEG7
+	/* stock-parity: reprogram PUB seg7 above-DRAM catch-all every boot */
+	mem_top_catchall_sec();
+#endif
 
 	slv_fw_aon1_special();
 #endif

@@ -560,7 +560,11 @@ void pll_sel_cfg(void)
 					BIT_PMU_APB_DPLL1_PUB_SYS_SEL);
 
 	/* ISPPLL select no sys at default */
-	REG32(REG_PMU_APB_ISPPLL_REL_CFG) &= ~BIT_PMU_APB_ISPPLL_AP_SEL;
+	/* Stock pll_sel_cfg does NOT clear ISPPLL_AP_SEL; this line is an extra write
+	 * from an older source revision. Removed for stock parity (ISPPLL is the ISP/
+	 * camera PLL, unrelated to the SPL; leaving it in the reset default matches
+	 * stock and avoids diverging the state the later stages inherit). */
+	/* REG32(REG_PMU_APB_ISPPLL_REL_CFG) &= ~BIT_PMU_APB_ISPPLL_AP_SEL; */
 
 	/* GPLL select no sys at default */
 

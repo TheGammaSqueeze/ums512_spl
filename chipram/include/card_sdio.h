@@ -20,6 +20,8 @@ PUBLIC BOOLEAN Emmc_Init(void);
 
 PUBLIC BOOLEAN Emmc_Read(CARD_EMMC_PARTITION_TPYE cardPartiton, uint32 startBlock, uint32 num, uint8 * buf);
 
+PUBLIC BOOLEAN Emmc_Write(CARD_EMMC_PARTITION_TPYE cardPartiton, uint32 startBlock, uint32 num, uint8 * buf);
+
 PUBLIC void Emmc_DisSdClk();
 
 //-------------------------------for SD card--------------------------//

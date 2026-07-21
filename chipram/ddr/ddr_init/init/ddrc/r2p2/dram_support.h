@@ -61,10 +61,10 @@
 #define WR_DBI_EN_LP3			0x0
 #define RD_DBI_EN_LP3			0x0
 
-#define WR_DBI_EN_LP4			0x0
+#define WR_DBI_EN_LP4			0x1
 #define RD_DBI_EN_LP4			0x0
 
-#define WR_DBI_EN_LP4X			0x0
+#define WR_DBI_EN_LP4X			0x1
 #define RD_DBI_EN_LP4X			0x0
 
 
