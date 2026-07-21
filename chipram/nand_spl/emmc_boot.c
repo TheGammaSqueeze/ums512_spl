@@ -633,9 +633,20 @@ static BOOLEAN spl_load_uboot_from_sd(void)
 {
 	sys_img_header *hdr = (sys_img_header *)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ);
 	uint32 img_size, img_sectors;
+	BOOLEAN sd_ok;
 
-	if (TRUE != SD_Init())
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(7);   /* DIAG: entered SD path, about to call SD_Init */
+#endif
+	sd_ok = SD_Init();
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(8);   /* DIAG: SD_Init returned (did NOT hang) */
+#endif
+	if (TRUE != sd_ok)
 		return FALSE;
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(10);   /* DIAG: SD_Init returned TRUE (a card was detected) */
+#endif
 
 	/* header first: KEY_INFO_SIZ bytes at the boot sector */
 	if (TRUE != SD_CARD_Read(SDCARD_BOOT_SECTOR, KEY_INFO_SIZ / EMMC_SECTOR_SIZE,
@@ -773,10 +784,23 @@ void nand_boot(void)
 #endif
 
 #ifdef CONFIG_SD_BOOT
-			/* prefer a valid u-boot image on SD; fall back to the eMMC slot */
-			if (TRUE != spl_load_uboot_from_sd())
+			/* SD reuses the eMMC (SDIO0) controller and handle: the SD attempt
+			 * soft-resets SDIO0 and drops its clock to SD-init speed. Re-init eMMC
+			 * afterwards to restore the shared controller before the jump, then
+			 * fall back to the eMMC u-boot slot if no valid image was on the card. */
+			{
+				BOOLEAN sd_loaded = spl_load_uboot_from_sd();
+				Emmc_Init();
+				if (TRUE != sd_loaded) {
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+					spl_buzz(9);   /* DIAG: SD failed, loading u-boot from eMMC */
 #endif
+					load_partition_with_header(spl_slot_name("uboot", g_slot_suffix),CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ));
+				}
+			}
+#else
 			load_partition_with_header(spl_slot_name("uboot", g_slot_suffix),CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ));
+#endif
 
 #ifdef CONFIG_MOBILEVISOR
 		sysdump_mode = bootmode_check_sysdump();
