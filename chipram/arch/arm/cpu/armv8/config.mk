@@ -13,5 +13,10 @@ PLATFORM_CPPFLAGS += $(PF_CPPFLAGS_ARMV7)
 PLATFORM_RELFLAGS +=$(call cc-option,-mshort-load-bytes,\
 		    $(call cc-option,-malignment-traps,))
 
-PLATFORM_RELFLAGS +=$(call cc-option,-mno-unaligned-access)
+# AArch64 gcc does not recognize -mno-unaligned-access (that is the ARM32 spelling);
+# cc-option silently drops it, so the compiler was free to emit unaligned stur/ldur.
+# The SPL runs with no MMU, where an unaligned access data-aborts (this hung the
+# eMMC CMD2 R2 response copy in SDHOST_GetRspFromBuf). -mstrict-align forces the
+# compiler to never generate unaligned accesses. Keep the ARM32 spelling as fallback.
+PLATFORM_RELFLAGS +=$(call cc-option,-mstrict-align,$(call cc-option,-mno-unaligned-access))
 PLATFORM_RELFLAGS += $(call cc-option, -msoft-float)

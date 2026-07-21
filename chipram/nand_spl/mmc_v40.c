@@ -908,6 +908,10 @@ static void SDHOST_GetRspFromBuf (SDIO_Hd_Ptr pHd,
 	tmpRspBuf[1] = pHd->host_cfg->RSP1;
 	tmpRspBuf[2] = pHd->host_cfg->RSP2;
 	tmpRspBuf[3] = pHd->host_cfg->RSP3;
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	if (Response == CMD_RSP_R2)
+		spl_buzz(3);   /* 3 = R2: RSP0-3 registers read OK (no bus stall) */
+#endif
 
 	for (i = 0; i < 4; i++)
 	{
@@ -1030,12 +1034,49 @@ static SDIO_Error_e SDIO_SendCmd ( SDIO_Hd_Ptr pHd,
 					CMD_TYPE_NORMAL, 
 					s_cmdDetail[cmd].response);
 
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	{
+		uint32 _spins = 0;
+		uint32 _diag = (cmd == CARD_CMD2_ALL_SEND_CID);
+		if (_diag)
+			spl_buzz(1);   /* 1 = reached CMD2's wait loop */
+		while (0 != _WaitCardEvent(pHd, s_cmdDetail[cmd].int_filter)) {
+			_SDHOST_IrqHandle((uint32)pHd);
+			if (_diag && _spins == 0)
+				spl_buzz(2);   /* 2 = first _SDHOST_IrqHandle returned (INT_STA read OK) */
+			if (++_spins > 2000) {
+				/* Report the stuck controller state (INT_STA), then break:
+				 *   3 = INT_STA all zero (controller silent: no response, no timeout)
+				 *   4 = error summary bit set (BIT_15)
+				 *   5 = command-complete bit set (BIT_0)
+				 *   6 = some other status bit set */
+				volatile uint32 _ist = pHd->host_cfg->INT_STA;
+				if (_diag) {
+					if (_ist == 0)               spl_buzz(3);
+					else if (_ist & 0x00008000)  spl_buzz(4);
+					else if (_ist & 0x00000001)  spl_buzz(5);
+					else                         spl_buzz(6);
+				}
+				break;
+			}
+		}
+	}
+#else
 	while (0 != _WaitCardEvent(pHd, s_cmdDetail[cmd].int_filter))
 	{
 		_SDHOST_IrqHandle((uint32)pHd);
 	}
+#endif
 
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	if (cmd == CARD_CMD2_ALL_SEND_CID)
+		spl_buzz(7);   /* 7 = CMD2 wait loop EXITED (completed) -> about to RST_CMD_DAT_LINE */
+#endif
 	SDHOST_RST (pHd, RST_CMD_DAT_LINE);
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	if (cmd == CARD_CMD2_ALL_SEND_CID)
+		spl_buzz(8);   /* 8 = RST_CMD_DAT_LINE done -> about to read/return R2 response */
+#endif
 
 	if( 0 !=  (pHd->card_event & SIG_ERR ))
 	{
@@ -1044,6 +1085,10 @@ static SDIO_Error_e SDIO_SendCmd ( SDIO_Hd_Ptr pHd,
 	}
 
 	SDHOST_GetRspFromBuf (pHd, s_cmdDetail[cmd].response, rspBuf);
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	if (cmd == CARD_CMD2_ALL_SEND_CID)
+		spl_buzz(4);   /* 4 = GetRspFromBuf returned -> SDIO_SendCmd about to return */
+#endif
 
 	return SDIO_ERR_NONE;
 }/* end of SDIO_SendCmd */
