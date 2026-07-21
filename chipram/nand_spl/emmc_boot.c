@@ -624,6 +624,40 @@ static const char *spl_other_suffix(void)
 	return (g_slot_suffix[1] == 'b') ? "_a" : "_b";
 }
 
+#ifdef CONFIG_SD_BOOT
+/*
+ * Try to load u-boot from a raw SD-card image instead of the eMMC uboot_<slot>
+ * partition. Validity confirmed by header magic before the jump.
+ */
+static BOOLEAN spl_load_uboot_from_sd(void)
+{
+	sys_img_header *hdr = (sys_img_header *)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ);
+	uint32 img_size, img_sectors;
+
+	if (TRUE != SD_Init())
+		return FALSE;
+
+	/* header first: KEY_INFO_SIZ bytes at the boot sector */
+	if (TRUE != SD_CARD_Read(SDCARD_BOOT_SECTOR, KEY_INFO_SIZ / EMMC_SECTOR_SIZE,
+				 (uint8 *)hdr))
+		return FALSE;
+
+	if (hdr->mMagicNum != 0x42544844)	/* "DHTB": presence means valid image on this card */
+		return FALSE;
+
+	img_size = hdr->mImgSize + 1024;	/* + secure cert, as load_partition_with_header does */
+	if (img_size > CONFIG_UBOOT_MAX_SIZE)
+		return FALSE;
+
+	img_sectors = (img_size + EMMC_SECTOR_SIZE - 1) / EMMC_SECTOR_SIZE;
+	if (TRUE != SD_CARD_Read(SDCARD_BOOT_SECTOR + KEY_INFO_SIZ / EMMC_SECTOR_SIZE,
+				 img_sectors, (uint8 *)CONFIG_SYS_NAND_U_BOOT_DST))
+		return FALSE;
+
+	return TRUE;
+}
+#endif
+
 void nand_boot(void)
 {
 	int ret;
@@ -734,6 +768,10 @@ void nand_boot(void)
 			}
 #endif
 
+#ifdef CONFIG_SD_BOOT
+			/* prefer a valid u-boot image on SD; fall back to the eMMC slot */
+			if (TRUE != spl_load_uboot_from_sd())
+#endif
 			load_partition_with_header(spl_slot_name("uboot", g_slot_suffix),CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ));
 
 #ifdef CONFIG_MOBILEVISOR
@@ -810,12 +848,9 @@ void nand_boot(void)
 	if(0 != sprd_hash_check((uint8_t*)(CONFIG_SYS_NAND_U_BOOT_DST-IMAGE_HEAD_SIZE))){
 		load_partition_with_header("uboot_bak",CONFIG_SYS_EMMC_U_BOOT_SECTOR_NUM*EMMC_SECTOR_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - EMMC_SECTOR_SIZE));
 		if(0 != sprd_hash_check((uint8_t*)(CONFIG_SYS_NAND_U_BOOT_DST-IMAGE_HEAD_SIZE))){
-#ifdef CONFIG_SD_BOOT
-			if (TRUE == SD_Init()) {
-				SD_CARD_Read( SDCARD_BOOT_SECTOR, CONFIG_SYS_EMMC_U_BOOT_SECTOR_NUM, (uint8_t *) CONFIG_SYS_NAND_U_BOOT_DST-EMMC_SECTOR_SIZE);
-			}
-#endif
-
+			/* SD-boot is handled in the active CONFIG_LOAD_PARTITION path
+			 * (spl_load_uboot_from_sd), not here: this CONFIG_DUAL_BACKUP
+			 * branch is #undef'd on this device. */
 		}
 	}
 #ifdef CONFIG_MOBILEVISOR
