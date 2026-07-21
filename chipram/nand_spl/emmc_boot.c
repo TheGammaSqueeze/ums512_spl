@@ -723,6 +723,17 @@ void nand_boot(void)
 #endif
 			}
 
+#ifdef CONFIG_SPL_FW_PARITY
+			/* stock parity: now that teecfg is loaded, extend PUB firewall seg0
+			 * to cover TEECFG..end-of-TOS, using the tos_size from the teecfg
+			 * header (offset 0x20). Matches stock's tos_sec after teecfg parse. */
+			if (!sysdump_security) {
+				sprd_fw_attr fw_attr;
+				fw_attr.tos_size = *((volatile unsigned int *)(CONFIG_TEECFG_LDADDR_START + 0x20));
+				sprd_firewall_config_attr(&fw_attr);
+			}
+#endif
+
 			load_partition_with_header(spl_slot_name("uboot", g_slot_suffix),CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ));
 
 #ifdef CONFIG_MOBILEVISOR

@@ -110,14 +110,22 @@
 
 // IRAM for PM
 #define IRAM_PM_ADDR	0x00000000
+#ifdef CONFIG_SPL_FW_PARITY
+#define IRAM_PM_SIZE	0x800		/* stock: PM iram fw last_addr = 0x7f */
+#else
 #define IRAM_PM_SIZE	0x2000
+#endif
 
 // IRAM for FW
 #define IRAM_FW_ADDR	0x00002000
 #define IRAM_FW_SIZE	0x1000
 
 // IRAM for efuse
+#ifdef CONFIG_SPL_FW_PARITY
+#define IRAM_EFUSE_ADDR	0x00000800	/* stock: efuse iram fw first/last = 0x80/0xbf */
+#else
 #define IRAM_EFUSE_ADDR	0x00015C00
+#endif
 #define IRAM_EFUSE_SIZE	0x00000400
 
 typedef struct {
@@ -299,8 +307,16 @@ static void sml_teecfg_sec (void)
 		REG32(&(mem_seg_addr->mst_id_wr_sec[i]))  = 0xFFFFFFFF;
 		REG32(&(mem_seg_addr->mst_id_wr_nsec[i])) = 0x0;
 	}
+#ifdef CONFIG_SPL_FW_PARITY
+	/* stock parity: seg0 initially covers TEECFG only (0x94040000..0x9405ffff,
+	 * first=0x14040 last=0x1405f); tos_sec() extends last_addr to the end of TOS
+	 * once teecfg is loaded. Stock does NOT put SML or the 32MB tail in seg0. */
+	REG32(&(mem_seg_addr->last_addr)) = (CONFIG_TEECFG_LDADDR_START + 0x20000 - 1 - 0x80000000)>>PUB_ADDR_SHIFT_BITS;
+	REG32(&(mem_seg_addr->first_addr)) = (CONFIG_TEECFG_LDADDR_START - 0x80000000)>>PUB_ADDR_SHIFT_BITS;
+#else
 	REG32(&(mem_seg_addr->last_addr)) = (CONFIG_SML_LDADDR_START + CONFIG_SEC_MEM_SIZE - 1 - 0x80000000)>>PUB_ADDR_SHIFT_BITS;
 	REG32(&(mem_seg_addr->first_addr)) = (CONFIG_SML_LDADDR_START - 0x80000000)>>PUB_ADDR_SHIFT_BITS;
+#endif
 }
 
 static void tos_sec (uint32_t tos_size)
@@ -308,7 +324,13 @@ static void tos_sec (uint32_t tos_size)
 	sprd_mem_seg_cfg *mem_seg_addr;
 
 	mem_seg_addr = (sprd_mem_seg_cfg *)((uint64_t)(SPRD_MEM_FW_PUB_BASE + MEM_FW_SEG_OFF));
+#ifdef CONFIG_SPL_FW_PARITY
+	/* stock parity: extend seg0 last_addr to the end of TOS (TEECFG..TOS end),
+	 * = (TOS_LDADDR + tos_size)>>12; for a 6MB tos this is 0x1465f like stock. */
+	REG32(&(mem_seg_addr->last_addr)) = (CONFIG_TOS_LDADDR_START + tos_size - 1 - 0x80000000)>>PUB_ADDR_SHIFT_BITS;
+#else
 	REG32(&(mem_seg_addr->last_addr)) = (CONFIG_SML_LDADDR_START + CONFIG_SEC_MEM_SIZE + tos_size - 1 - 0x80000000)>>PUB_ADDR_SHIFT_BITS;
+#endif
 }
 
 /* PUB memory-firewall segment 7 (0x3280C380): the "above top-of-DRAM" catch-all.
