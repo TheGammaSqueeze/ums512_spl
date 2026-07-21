@@ -645,8 +645,12 @@ static BOOLEAN spl_load_uboot_from_sd(void)
 	if (hdr->mMagicNum != 0x42544844)	/* "DHTB": presence means valid image on this card */
 		return FALSE;
 
-	img_size = hdr->mImgSize + 1024;	/* + secure cert, as load_partition_with_header does */
-	if (img_size > CONFIG_UBOOT_MAX_SIZE)
+	/* no signature/cert check on the SD image: a DHTB-wrapped u-boot present on
+	 * the card (magic checked above) is enough. Load exactly the payload; unlike
+	 * the eMMC image it carries no trailing secure cert. Bounding mImgSize here
+	 * also stops a malformed header from wrapping past the size check. */
+	img_size = hdr->mImgSize;
+	if (img_size == 0 || img_size > CONFIG_UBOOT_MAX_SIZE)
 		return FALSE;
 
 	img_sectors = (img_size + EMMC_SECTOR_SIZE - 1) / EMMC_SECTOR_SIZE;
