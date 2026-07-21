@@ -908,10 +908,6 @@ static void SDHOST_GetRspFromBuf (SDIO_Hd_Ptr pHd,
 	tmpRspBuf[1] = pHd->host_cfg->RSP1;
 	tmpRspBuf[2] = pHd->host_cfg->RSP2;
 	tmpRspBuf[3] = pHd->host_cfg->RSP3;
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	if (Response == CMD_RSP_R2)
-		spl_buzz(3);   /* 3 = R2: RSP0-3 registers read OK (no bus stall) */
-#endif
 
 	for (i = 0; i < 4; i++)
 	{
@@ -1034,49 +1030,12 @@ static SDIO_Error_e SDIO_SendCmd ( SDIO_Hd_Ptr pHd,
 					CMD_TYPE_NORMAL, 
 					s_cmdDetail[cmd].response);
 
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	{
-		uint32 _spins = 0;
-		uint32 _diag = (cmd == CARD_CMD2_ALL_SEND_CID);
-		if (_diag)
-			spl_buzz(1);   /* 1 = reached CMD2's wait loop */
-		while (0 != _WaitCardEvent(pHd, s_cmdDetail[cmd].int_filter)) {
-			_SDHOST_IrqHandle((uint32)pHd);
-			if (_diag && _spins == 0)
-				spl_buzz(2);   /* 2 = first _SDHOST_IrqHandle returned (INT_STA read OK) */
-			if (++_spins > 2000) {
-				/* Report the stuck controller state (INT_STA), then break:
-				 *   3 = INT_STA all zero (controller silent: no response, no timeout)
-				 *   4 = error summary bit set (BIT_15)
-				 *   5 = command-complete bit set (BIT_0)
-				 *   6 = some other status bit set */
-				volatile uint32 _ist = pHd->host_cfg->INT_STA;
-				if (_diag) {
-					if (_ist == 0)               spl_buzz(3);
-					else if (_ist & 0x00008000)  spl_buzz(4);
-					else if (_ist & 0x00000001)  spl_buzz(5);
-					else                         spl_buzz(6);
-				}
-				break;
-			}
-		}
-	}
-#else
 	while (0 != _WaitCardEvent(pHd, s_cmdDetail[cmd].int_filter))
 	{
 		_SDHOST_IrqHandle((uint32)pHd);
 	}
-#endif
 
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	if (cmd == CARD_CMD2_ALL_SEND_CID)
-		spl_buzz(7);   /* 7 = CMD2 wait loop EXITED (completed) -> about to RST_CMD_DAT_LINE */
-#endif
 	SDHOST_RST (pHd, RST_CMD_DAT_LINE);
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	if (cmd == CARD_CMD2_ALL_SEND_CID)
-		spl_buzz(8);   /* 8 = RST_CMD_DAT_LINE done -> about to read/return R2 response */
-#endif
 
 	if( 0 !=  (pHd->card_event & SIG_ERR ))
 	{
@@ -1085,10 +1044,6 @@ static SDIO_Error_e SDIO_SendCmd ( SDIO_Hd_Ptr pHd,
 	}
 
 	SDHOST_GetRspFromBuf (pHd, s_cmdDetail[cmd].response, rspBuf);
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	if (cmd == CARD_CMD2_ALL_SEND_CID)
-		spl_buzz(4);   /* 4 = GetRspFromBuf returned -> SDIO_SendCmd about to return */
-#endif
 
 	return SDIO_ERR_NONE;
 }/* end of SDIO_SendCmd */
@@ -1458,11 +1413,8 @@ static BOOLEAN CARD_SDIO_InitCard(SDIO_Hd_Ptr pHd,
 	{
 		return FALSE;
 	}
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(3);   /* CMD0 (GO_IDLE) completed -> controller can drive the CMD line */
-#endif
 
-	pre_tick = SCI_GetTickCount(); /*set start tick value*/
+	pre_tick = SCI_GetTickCount(); /*set start tick value*/       
 	do
 	{
 		if (0 != SDIO_SendCmd(pHd, CARD_CMD1_SEND_OP_COND,
@@ -1484,41 +1436,26 @@ static BOOLEAN CARD_SDIO_InitCard(SDIO_Hd_Ptr pHd,
 		} 
 
 	} while(1);
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(4);   /* CMD1 (SEND_OP_COND) reported ready -> card powered and responding */
-#endif
 
 	/* Get CID */
 	if (0 != SDIO_SendCmd(pHd, CARD_CMD2_ALL_SEND_CID, 0, NULL, rspBuf))
-	{
+	{	
 		return FALSE;
 	}
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(5);   /* CMD2 (ALL_SEND_CID, R2 long response) completed */
-#endif
 
 	if (0 != SDIO_SendCmd(pHd, CARD_CMD3_SET_RELATIVE_ADDR, 1 << 16, NULL, rspBuf))
 	{
 		return FALSE;
 	}
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(6);   /* CMD3 (SET_RELATIVE_ADDR, R1) completed */
-#endif
 
 	if(0 != SDIO_SendCmd(pHd, CARD_CMD7_SELECT_DESELECT_CARD, 1<<16, NULL, rspBuf))
 	{
 		return FALSE;
 	}
 
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(7);   /* CMD7 (SELECT_CARD) done -> about to do Ext-CSD DMA read */
-#endif
 	if (FALSE == mmc_read_ext_csd(pHd, rspBuf)) {
 		return FALSE;
 	}
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	spl_buzz(8);   /* Ext-CSD DMA read OK -> card fully identified, finishing init */
-#endif
 
 	/* get Boot2 Capacity */
 	/*
@@ -1607,22 +1544,13 @@ static BOOLEAN SDIO_PowerCtl (SDIO_Hd_Ptr pHd, SDIO_OnOff_e pwrFlg)
 	return TRUE;
 }
 
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-extern void spl_buzz(int count);
-#endif
 PUBLIC BOOLEAN Emmc_Init( void )
 {
 	uint32 ret = 0;
-	p_EmmcHd = SDHOST_Register ( _irqCardProc);
+	p_EmmcHd = SDHOST_Register ( _irqCardProc); 
 
 	//SDIO_PowerCtl(p_EmmcHd, SDIO_OFF);
 	SDIO_PowerCtl(p_EmmcHd, SDIO_ON);
-	/* NOTE: an spl_buzz() marker was here (mid-Emmc_Init) for diagnosis. It is
-	 * REMOVED because the whole eMMC path is byte-identical to the stock SPL
-	 * (verified), so a marker's delay/PMIC activity between clock-on and the
-	 * first card command was the only thing differing from stock at this point.
-	 * The card init now runs uninterrupted, exactly like stock. The buzz(9)
-	 * fork at the end of Emmc_Init still distinguishes return-FALSE from hang. */
 
 	p_EmmcHd->block_len = 0;
 	p_EmmcHd->rca = 1;
@@ -1644,14 +1572,6 @@ PUBLIC BOOLEAN Emmc_Init( void )
 	sprd_mmc_dev.block_read = Emmc_Read;
 	sprd_mmc_dev.lba = mmc_sector;
 
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-	/* Fork: distinguish "card init failed (returned FALSE) -> downstream hash trap"
-	 * from "hung inside a card command (never returns)". A long 9-buzz burst here
-	 * means Emmc_Init RETURNED but with FALSE. No buzz here (stuck at stage 3) means
-	 * it hung in a card command. A stage-4 buzz (from nand_boot) means success. */
-	if (!ret)
-		spl_buzz(9);
-#endif
 	return ret;
 }
 
