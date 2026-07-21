@@ -874,13 +874,6 @@ void ddrc_train_seq(u32 ddr_mode,u32 train_top_clk)
 		}
 		if(0==((ddr_mode>>(8+fn))&0x1))
 		{
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-			/* One buzz per trained frequency, at the top of the iteration.
-			 * fn=2:512M->1, 3:768M->2, 4:1024M->3, 5:1333M->4, 6:1536M->5,
-			 * 7:1866M->6. Highest count heard names the frequency whose
-			 * training (voltage set / dmc_phy_train / bist) hangs. */
-			spl_buzz(fn - 1);
-#endif
 			if(ddr_clk >= DDR_CLK_1333M)/*Deal with Special freq dfs */
 			{
 				/*Transform VDDCORE*/
@@ -1687,5 +1680,7 @@ void sdram_init()
 	ddr_init_pass();
 	ddrc_lock();
 #endif
-
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(1);   /* STAGE 1: DDR init fully complete (all training + finalization) */
+#endif
 }

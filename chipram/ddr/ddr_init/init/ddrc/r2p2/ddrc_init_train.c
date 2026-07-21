@@ -2330,12 +2330,27 @@ After  dfs set 4 MR register through DTMG15~DTMG16
 
  *Eg1:start -> F5->F5->training(wr=0,op=0)    ->Before seq (wr=0,op=0),This status can run training seq
  ********************************************************************************/
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+extern void spl_buzz(int count);
+/* At 1333MHz only, emit one single buzz per stage so the count of trailing
+ * single buzzes (after the 4-burst from ddrc_train_seq) locates the hang:
+ *   1 = entered dmc_phy_train (past vddcore); 2 = DFS switch to 1333 done;
+ *   3 = dmc_phy_train_lp4 training done (no polling_done trap);
+ *   4 = cycle_convert + 1333 raw-write block done;
+ *   5 = end-train + rd_en/bist loop done (dmc_phy_train fully complete). */
+/* DDR training confirmed working for all freqs; per-stage 1333/1866 markers
+ * retired. Boot-stage markers now live in sdram_init post-training + nand_boot. */
+#define BUZZ1333(n) do { } while (0)
+#else
+#define BUZZ1333(n) do { } while (0)
+#endif
 void dmc_phy_train(u32 ddr_clk)
 {
     int rd_en_val=0,rd_en_val_min=0,rd_en_val_max=0;
     u32 bist_result;
     /****train info init*****/
     train_info.ddr_clk=ddr_clk;
+    BUZZ1333(1);
 #if TEST_DEBUG_LOG_LEVEL>0
     dmc_print_str("\r\ntraining fn:");
     print_Hex(train_info.ddr_clk);
@@ -2351,6 +2366,7 @@ void dmc_phy_train(u32 ddr_clk)
     dmc_fsp_dfs_prepare(train_info.ddr_freq_num);
     //dfs to target frequency
     sw_dfs_go(train_info.ddr_freq_num);
+    BUZZ1333(2);
     //Second:set wr=0 in second fsp dfs
     dmc_fsp_dfs_prepare(train_info.ddr_freq_num);
     //train enable
@@ -2373,6 +2389,7 @@ void dmc_phy_train(u32 ddr_clk)
         //lp4/lp4x train
         dmc_phy_train_lp4();
     }
+    BUZZ1333(3);
     dmc_phy_train_cycle_convert();
     if(train_info.ddr_clk == 1536)
     {
@@ -2384,6 +2401,7 @@ void dmc_phy_train(u32 ddr_clk)
         __raw_writel(0x310014e4,__raw_readl(0x31001424));
         __raw_writel(0x310014e8,__raw_readl(0x31001428));
     }
+    BUZZ1333(4);
 
 
     //end train
@@ -2421,5 +2439,6 @@ void dmc_phy_train(u32 ddr_clk)
 #if TEST_DEBUG_LOG_LEVEL>0
     dmc_print_str("  ok!");
 #endif
+    BUZZ1333(5);
 }
 

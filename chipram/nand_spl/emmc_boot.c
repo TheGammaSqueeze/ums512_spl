@@ -488,7 +488,13 @@ void nand_boot(void)
 #endif
 #endif
 #ifdef CONFIG_LOAD_PARTITION
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+		spl_buzz(2);   /* STAGE 2: nand_boot + firewall_config_pre done, about to init eMMC */
+#endif
 		if(TRUE == Emmc_Init()){
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+			spl_buzz(4);   /* STAGE 4: Emmc_Init returned OK (card fully initialized) */
+#endif
 			{
 				int slot = spl_select_slot();
 				if (slot < 0)
@@ -696,6 +702,9 @@ if (!sysdump_mode)
 	update_swVersion();
 
 #endif
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(5);   /* STAGE 5: all boot images loaded + verified from eMMC */
+#endif
 	/*
 	 * Jump to U-Boot image
 	 */
@@ -785,6 +794,9 @@ if (!sysdump_mode)
 	chipram_env_set(BOOTLOADER_MODE_LOAD);
 #endif
 
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+	spl_buzz(6);   /* STAGE 6: DDR + images + firewall done, jumping to SML/secure world */
+#endif
 #if (CONFIG_LOAD_TOS_ALONE == 1) && !defined (CONFIG_ATF_BOOT_TOS)
 	secure_sp_entry(CONFIG_TOS_LDADDR_START,CONFIG_SYS_NAND_U_BOOT_START);
 #else
