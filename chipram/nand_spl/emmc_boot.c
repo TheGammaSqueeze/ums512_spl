@@ -753,17 +753,28 @@ void nand_boot(void)
 		spl_buzz(3);   /* STAGE 3: nand_boot + firewall_config_pre done, about to init eMMC */
 #endif
 		dev = NULL;
+		int sd_hybrid_uboot = 0;   /* load u-boot from SD, secure world from eMMC */
 #ifdef CONFIG_SD_BOOT
 		/* Prefer a GPT-partitioned SD card when present. SD and eMMC share the
 		 * SDIO0 controller, so commit to SD only once we've confirmed it carries a
-		 * valid GPT with a u-boot partition (slotted or not) */
+		 * valid GPT with a u-boot partition (slotted or not). If the SD carries a
+		 * u-boot but NO secure world, boot SML/TOS/teecfg from eMMC and only the
+		 * u-boot from SD (the "hybrid" case): the stock u-boot needs SML set up on
+		 * every boot (PSCI / warm-reboot state), so a raw jump to it only survives
+		 * a fresh flash and hangs after a reboot. */
 		if (TRUE == SD_Init()) {
 			block_dev_desc_t *sd = sd_get_dev();
-			if (spl_part_exists(sd, "uboot") ||
-			    spl_part_exists(sd, "uboot_a") ||
-			    spl_part_exists(sd, "uboot_b")) {
-				spl_set_boot_dev(sd);
+			int sd_has_uboot = spl_part_exists(sd, "uboot") ||
+					   spl_part_exists(sd, "uboot_a") ||
+					   spl_part_exists(sd, "uboot_b");
+			int sd_has_sml   = spl_part_exists(sd, "sml") ||
+					   spl_part_exists(sd, "sml_a") ||
+					   spl_part_exists(sd, "sml_b");
+			if (sd_has_uboot && sd_has_sml) {
+				spl_set_boot_dev(sd);   /* full boot from SD */
 				dev = sd;
+			} else if (sd_has_uboot) {
+				sd_hybrid_uboot = 1;    /* u-boot from SD, secure world from eMMC */
 			}
 		}
 #endif
@@ -833,7 +844,24 @@ void nand_boot(void)
 #endif
 			}
 
-			/* u-boot: always, from the selected GPT device (SD or eMMC). */
+			/* u-boot source. Hybrid: the secure world above came from eMMC, now
+			 * pull the u-boot from SD. Re-init SD first: the eMMC secure-image
+			 * loads ran on the shared SDIO0 controller since the SD probe, so the
+			 * card handle must be re-established. Then restore eMMC as the default.
+			 * Non-hybrid: u-boot from the selected device (SD or eMMC). */
+#ifdef CONFIG_SD_BOOT
+			if (sd_hybrid_uboot) {
+				SD_Init();
+				spl_set_boot_dev(sd_get_dev());
+				uboot_ok = (0 == load_partition_with_header(
+					spl_part_exists(sd_get_dev(), "uboot") ? (uchar *)"uboot"
+					                                       : spl_slot_name("uboot", g_slot_suffix),
+					CONFIG_UBOOT_MAX_SIZE, CONFIG_SYS_NAND_U_BOOT_DST,
+					(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ))) ? TRUE : FALSE;
+				Emmc_Init();              /* restore the shared eMMC controller for the pre-jump path */
+				spl_set_boot_dev(NULL);   /* restore eMMC as get_dev() default */
+			} else
+#endif
 			uboot_ok = (0 == load_partition_with_header(spl_slot_name("uboot", g_slot_suffix),CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ))) ? TRUE : FALSE;
 
 #ifdef CONFIG_SD_BOOT
