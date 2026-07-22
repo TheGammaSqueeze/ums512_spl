@@ -1851,11 +1851,22 @@ static SDIO_Hd_Ptr SD_HOST_Register(SDIO_CALLBACK fun)
 	s_EmmcCtl.sig_callBack = fun;
 	s_EmmcCtl.err_filter = 0;
 
-	/* SPL is loaded from eMMC, so SD needs to be turned on. */
+	/* SPL is loaded from eMMC, so SD needs to be turned on. Power-CYCLE it rather
+	 * than just switch it on: on a warm reboot the PMIC keeps the rails up and the
+	 * card stays latched in whatever state the previous boot left it (typically
+	 * 1.8V UHS signaling), which a plain 3.3V re-init cannot recover. That is why
+	 * SD boot works on a fresh flash but fails after a reboot. Unlock the power
+	 * regs, force the rails OFF and hold so VDD drains, reset the I/O voltage to
+	 * 3.0V, then power back ON so the card always comes up fresh at 3.3V. */
 #if defined(CONFIG_ADIE_SC2730)
 	ANA_REG_SET(ANA_REG_GLB_PWR_WR_PROT_VALUE, BITS_PWR_WR_PROT_VALUE(0x6e7f));
-	ANA_REG_BIC(ANA_REG_GLB_LDO_VDDSDCORE_REG0, BIT_LDO_VDDSDCORE_PD);
-	ANA_REG_BIC(ANA_REG_GLB_LDO_VDDSDIO_REG0, BIT_LDO_VDDSDIO_PD);
+	ANA_REG_OR(ANA_REG_GLB_LDO_VDDSDCORE_REG0, BIT_LDO_VDDSDCORE_PD);   /* vddsdcore off */
+	ANA_REG_OR(ANA_REG_GLB_LDO_VDDSDIO_REG0, BIT_LDO_VDDSDIO_PD);       /* vddsdio  off */
+	SDIO_Mdelay(20);                                                   /* let VDD drain */
+	sci_adi_write(ANA_REG_GLB_LDO_VDDSDCORE_REG1, BITS_LDO_VDDSDCORE_V(0xB4), 0xFF); /* 3.0V */
+	sci_adi_write(ANA_REG_GLB_LDO_VDDSDIO_REG1,  BITS_LDO_VDDSDIO_V(0xB4),  0xFF);   /* 3.0V */
+	ANA_REG_BIC(ANA_REG_GLB_LDO_VDDSDCORE_REG0, BIT_LDO_VDDSDCORE_PD);  /* vddsdcore on */
+	ANA_REG_BIC(ANA_REG_GLB_LDO_VDDSDIO_REG0, BIT_LDO_VDDSDIO_PD);      /* vddsdio  on */
 	SDIO_Mdelay(10);
 #endif
 
