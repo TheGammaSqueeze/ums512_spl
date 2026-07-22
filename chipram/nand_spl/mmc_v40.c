@@ -9,6 +9,33 @@
 #define MMCSD_SECTOR_SIZE 512
 #define EXT_CSD_SEC_CNT	212
 
+/* SPRD sdhci-r11 vendor PHY-delay registers (offsets from the controller base,
+ * past the SDIO_REG_CFG struct). */
+#define SPRD_SDHC_REG_DLL_DLY		0x204
+#define SPRD_SDHC_REG_DEBOUNCE		0x28C
+#define SPRD_SDHC_BIT_DLL_BAK		BIT_0
+#define SPRD_SDHC_BIT_DLL_VAL		BIT_1
+/* ums512 sdio0 legacy phy-delay: DTS <0x7f 0x1a 0x9a 0x9a> packed
+ * val0 | val1<<8 | val2<<16 | val3<<24. */
+#define SPRD_SDHC_SDIO0_PHY_DLY_LEGACY	0x9a9a1a7f
+
+/* SD Pull-ups (MISC regs): PULL_UP_20K = BIT_7. */
+#define SPRD_SDHC_PAD_PULL_UP_20K	BIT_7
+#define SPRD_SDHC_SD0_CMD_MISC		0x324504BC
+#define SPRD_SDHC_SD0_D0_MISC		0x324504C0
+#define SPRD_SDHC_SD0_D1_MISC		0x324504C4
+#define SPRD_SDHC_SD0_D2_MISC		0x324504CC
+#define SPRD_SDHC_SD0_D3_MISC		0x324504D0
+
+/* SD Function select (COMMON regs): bits[5:4] */
+#define SPRD_SDHC_PAD_FUNC_MASK		(BIT_4 | BIT_5)
+#define SPRD_SDHC_SD0_CMD_FUNC		0x324500BC
+#define SPRD_SDHC_SD0_D0_FUNC		0x324500C0
+#define SPRD_SDHC_SD0_D1_FUNC		0x324500C4
+#define SPRD_SDHC_SD0_CLK_FUNC		0x324500C8
+#define SPRD_SDHC_SD0_D2_FUNC		0x324500CC
+#define SPRD_SDHC_SD0_D3_FUNC		0x324500D0
+
 static SDIO_Hd_Ptr	p_SdHd;
 static SDIO_Handle_t	s_EmmcCtl = {0};
 static SDIO_Hd_Ptr	p_EmmcHd;
@@ -1792,8 +1819,37 @@ static SDIO_Hd_Ptr SD_HOST_Register(SDIO_CALLBACK fun)
 #endif
 
 	s_EmmcCtl.open_flag = TRUE;
+	s_EmmcCtl.base_clock = 384000000;
 	s_EmmcCtl.sig_callBack = fun;
 	s_EmmcCtl.err_filter = 0;
+
+	/* SPL is loaded from eMMC, so SD needs to be turned on. */
+#if defined(CONFIG_ADIE_SC2730)
+	ANA_REG_SET(ANA_REG_GLB_PWR_WR_PROT_VALUE, BITS_PWR_WR_PROT_VALUE(0x6e7f));
+	ANA_REG_BIC(ANA_REG_GLB_LDO_VDDSDCORE_REG0, BIT_LDO_VDDSDCORE_PD);
+	ANA_REG_BIC(ANA_REG_GLB_LDO_VDDSDIO_REG0, BIT_LDO_VDDSDIO_PD);
+	SDIO_Mdelay(10);
+#endif
+
+#if defined(CONFIG_SOC_SHARKL5PRO)
+	/* Make sure the SDIO0 pad IO power gate is not off (on-die IO supply). */
+	REG32(REG_AON_APB_AP_SDIO0_PHY_CTRL) &= ~BIT_AON_APB_AP_SDIO0_IO_POWER_OFF;
+
+	/* The SD0 pads are configured by the kernel/u-boot pinctrl, which run after
+	 * the SPL, so we need to set them here too.*/
+	REG32(SPRD_SDHC_SD0_CMD_MISC) |= SPRD_SDHC_PAD_PULL_UP_20K;
+	REG32(SPRD_SDHC_SD0_D0_MISC)  |= SPRD_SDHC_PAD_PULL_UP_20K;
+	REG32(SPRD_SDHC_SD0_D1_MISC)  |= SPRD_SDHC_PAD_PULL_UP_20K;
+	REG32(SPRD_SDHC_SD0_D2_MISC)  |= SPRD_SDHC_PAD_PULL_UP_20K;
+	REG32(SPRD_SDHC_SD0_D3_MISC)  |= SPRD_SDHC_PAD_PULL_UP_20K;
+
+	REG32(SPRD_SDHC_SD0_CMD_FUNC) &= ~SPRD_SDHC_PAD_FUNC_MASK;
+	REG32(SPRD_SDHC_SD0_CLK_FUNC) &= ~SPRD_SDHC_PAD_FUNC_MASK;
+	REG32(SPRD_SDHC_SD0_D0_FUNC)  &= ~SPRD_SDHC_PAD_FUNC_MASK;
+	REG32(SPRD_SDHC_SD0_D1_FUNC)  &= ~SPRD_SDHC_PAD_FUNC_MASK;
+	REG32(SPRD_SDHC_SD0_D2_FUNC)  &= ~SPRD_SDHC_PAD_FUNC_MASK;
+	REG32(SPRD_SDHC_SD0_D3_FUNC)  &= ~SPRD_SDHC_PAD_FUNC_MASK;
+#endif
 	return &s_EmmcCtl;
 }
 
@@ -1827,6 +1883,9 @@ static BOOLEAN SD_CARD_SDIO_InitCard(SDIO_Hd_Ptr pHd, uint32 sdioClk, SDIO_BusWi
 	uint8 rspBuf[16];
 	uint16 rca;
 	uint32 pre_tick, cur_tick;
+
+	/* Give SD clocks some warmup per spec. */
+	SDIO_Mdelay(2);
 
 	//for cmd0
 	if (0 != SDIO_SendCmd(pHd, CARD_CMD0_GO_IDLE_STATE, 0, NULL, rspBuf)) {
@@ -1862,6 +1921,7 @@ static BOOLEAN SD_CARD_SDIO_InitCard(SDIO_Hd_Ptr pHd, uint32 sdioClk, SDIO_BusWi
 
 	} while (1);
 
+
 	//for CID
 	if (0 != SDIO_SendCmd(pHd, CARD_CMD2_ALL_SEND_CID, 0, NULL, rspBuf)) {
 		return FALSE;
@@ -1883,7 +1943,7 @@ static BOOLEAN SD_CARD_SDIO_InitCard(SDIO_Hd_Ptr pHd, uint32 sdioClk, SDIO_BusWi
 	if (FALSE == SD_CARD_SDIO_SetBusWidth(pHd, busWidth)) {
 		return FALSE;
 	}
-	SD_SetClk(pHd, sdioClk);
+	SD_SetClk(pHd, sdioClk);	
 	//set BLOCKLEN
 	if (FALSE == CARD_SDIO_SetBlockLength(pHd, CARD_DATA_BLOCK_LEN)) {
 		return FALSE;
@@ -1906,6 +1966,18 @@ static uint32 SD_Set_init_clk(SDIO_Hd_Ptr pHd)
 	SDHOST_ClkFreq_Set(pHd, 400000);
 #else
 	REG32 (SPRD_AONCKG_BASE+AON_SDIO0_CLK_2X_CFG) = AON_CLK_FREQ_200K_DIV|AON_CLK_FREQ_1M;
+#endif
+#if defined(CONFIG_SOC_SHARKL5) || defined(CONFIG_SOC_SHARKL5PRO)
+	REG32 (REG_AP_CLK_CORE_CGM_SDIO0_2X_CFG) = AP_CLK_FREQ_384M;
+	SDHOST_ClkFreq_Set(pHd, 400000);
+#endif
+
+	/* Load the SDIO0 PHY delay (DLL backup mode + board legacy phy-delay).*/
+#if defined(CONFIG_SOC_SHARKL5PRO)
+	REG32(SDIO0_BASE_ADDR + SPRD_SDHC_REG_DEBOUNCE) |=
+		(SPRD_SDHC_BIT_DLL_BAK | SPRD_SDHC_BIT_DLL_VAL);
+	REG32(SDIO0_BASE_ADDR + SPRD_SDHC_REG_DLL_DLY) =
+		SPRD_SDHC_SDIO0_PHY_DLY_LEGACY;
 #endif
 	SDHOST_InternalClk_Enable(pHd, SDIO_ON);
 	SDHOST_SdClk_Enable(pHd, SDIO_ON);
