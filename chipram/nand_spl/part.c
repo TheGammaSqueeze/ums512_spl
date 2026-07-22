@@ -2,8 +2,20 @@
 #include <common.h>
 extern block_dev_desc_t sprd_mmc_dev;
 extern block_dev_desc_t sprd_ufs_dev;
+
+
+/* Active boot block device. NULL means "use the compile-time default/fallback". */
+static block_dev_desc_t *g_boot_dev = NULL;
+
+void spl_set_boot_dev(block_dev_desc_t *dev)
+{
+	g_boot_dev = dev;
+}
+
 block_dev_desc_t *get_dev()
 {
+	if (g_boot_dev)
+		return g_boot_dev;
 #ifdef CONFIG_EMMC_BOOT
 	return mmc_get_dev();
 #elif defined(CONFIG_UFS_BOOT)

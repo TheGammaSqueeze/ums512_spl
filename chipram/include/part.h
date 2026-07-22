@@ -54,3 +54,5 @@ extern block_dev_desc_t *get_dev();
 extern int get_partition_info_by_name (block_dev_desc_t *dev_desc, uchar * partition_name,
 						disk_partition_t *info);
 extern block_dev_desc_t *mmc_get_dev();
+extern block_dev_desc_t *sd_get_dev();
+extern void spl_set_boot_dev(block_dev_desc_t *dev);

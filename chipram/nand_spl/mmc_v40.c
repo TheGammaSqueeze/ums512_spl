@@ -51,6 +51,34 @@ block_dev_desc_t *mmc_get_dev()
 	return ((block_dev_desc_t *) & sprd_mmc_dev);
 }
 
+block_dev_desc_t sprd_sd_dev;
+
+PUBLIC BOOLEAN SD_CARD_Read(uint32 startBlk, uint32 num, uint8 * buf);
+
+/*
+ * block_read shim for the SD card. SD_CARD_Read() takes no partition argument,
+ * so we just ignore the dev arg.
+ */
+static unsigned long SD_block_read(int dev, ulong start, ulong blkcnt, void *buffer)
+{
+	(void)dev;
+	return SD_CARD_Read((uint32)start, (uint32)blkcnt, (uint8 *)buffer);
+}
+
+/*
+ * Build (once SD_Init() has run) a block device over the SD card so the shared
+ * GPT/partition helpers work against it exactly as they do for eMMC.
+ */
+block_dev_desc_t *sd_get_dev(void)
+{
+	sprd_sd_dev.part_type  = PART_TYPE_EFI;
+	sprd_sd_dev.dev        = 0;
+	sprd_sd_dev.blksz      = MMCSD_SECTOR_SIZE;
+	sprd_sd_dev.block_read = SD_block_read;
+	sprd_sd_dev.lba        = 0;
+	return &sprd_sd_dev;
+}
+
 
 static uint32 SCI_GetTickCount(void)
 {

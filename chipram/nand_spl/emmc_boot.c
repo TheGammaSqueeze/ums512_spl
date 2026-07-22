@@ -603,7 +603,11 @@ static int spl_select_slot(void)
 	return best;
 }
 
-/* Build "<base><suffix>" (e.g. "uboot" + "_b") into the shared name buffer. */
+/*
+ * Build "<base><suffix>" (e.g. "uboot" + "_b") into the shared name buffer.
+ * An empty suffix ("") yields the bare base name, which is what a non-A/B
+ * (mainline) card uses for its single "uboot"/"sml"/... partitions.
+ */
 static uchar *spl_slot_name(const char *base, const char *suffix)
 {
 	int i = 0;
@@ -612,10 +616,21 @@ static uchar *spl_slot_name(const char *base, const char *suffix)
 		g_name_buf[i] = (uchar)base[i];
 		i++;
 	}
-	g_name_buf[i]     = (uchar)suffix[0];
-	g_name_buf[i + 1] = (uchar)suffix[1];
-	g_name_buf[i + 2] = 0;
+	if (suffix && suffix[0]) {
+		g_name_buf[i++] = (uchar)suffix[0];
+		if (suffix[1])
+			g_name_buf[i++] = (uchar)suffix[1];
+	}
+	g_name_buf[i] = 0;
 	return g_name_buf;
+}
+
+/* True if a partition with this name exists on the given device's GPT. */
+static int spl_part_exists(block_dev_desc_t *dev, const char *name)
+{
+	disk_partition_t info;
+
+	return (0 == get_partition_info_by_name(dev, (uchar *)name, &info));
 }
 
 /* Suffix of the inactive slot, used as the redundancy fallback on this A/B device. */
@@ -703,7 +718,9 @@ void nand_boot(void)
 
 	sysdump_security = check_sprd_sysdump_sec();
 	if (!sysdump_security) {  //sysdump mode (tos panic) don't enable firewall
-		sprd_firewall_config_pre();
+		/* Don't set up firewall locks here so we can actually check if we need them first.
+		 * USB clocks were unconditional here though, so we keep doing that. */ 
+		sprd_firewall_usb_clk_enable();
 	}
 
 #ifdef CONFIG_EMMC_BOOT
@@ -735,71 +752,111 @@ void nand_boot(void)
 #ifdef CONFIG_SPL_VIBRATE_MARKERS
 		spl_buzz(3);   /* STAGE 3: nand_boot + firewall_config_pre done, about to init eMMC */
 #endif
-		if(TRUE == Emmc_Init()){
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
-			spl_buzz(4);   /* STAGE 4: Emmc_Init returned OK (card fully initialized) */
+		dev = NULL;
+#ifdef CONFIG_SD_BOOT
+		/* Prefer a GPT-partitioned SD card when present. SD and eMMC share the
+		 * SDIO0 controller, so commit to SD only once we've confirmed it carries a
+		 * valid GPT with a u-boot partition (slotted or not) */
+		if (TRUE == SD_Init()) {
+			block_dev_desc_t *sd = sd_get_dev();
+			if (spl_part_exists(sd, "uboot") ||
+			    spl_part_exists(sd, "uboot_a") ||
+			    spl_part_exists(sd, "uboot_b")) {
+				spl_set_boot_dev(sd);
+				dev = sd;
+			}
+		}
 #endif
-			{
+		if (dev == NULL) {
+			if (TRUE == Emmc_Init()) {
+				spl_set_boot_dev(NULL);   /* get_dev() -> eMMC default */
+				dev = get_dev();
+			}
+		}
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+		spl_buzz(4);   /* STAGE 4: boot device initialized */
+#endif
+		int load_secure;
+		if (dev != NULL) {
+			BOOLEAN uboot_ok;
+
+			/* A/B slot resolution, but only if the card is actually slotted. */
+			if (spl_part_exists(dev, "uboot_a") ||
+			    spl_part_exists(dev, "uboot_b")) {
 				int slot = spl_select_slot();
 				if (slot < 0)
 					slot = 1;   /* misc/BCB unreadable: default to the slot this device
 					             * ships active (_b). Both slots exist, so this never
 					             * targets a missing partition; the BCB normally decides. */
+				g_slot_suffix[0] = '_';
 				g_slot_suffix[1] = slot ? 'b' : 'a';
+			} else {
+				g_slot_suffix[0] = 0;   /* no A/B: bare partition names */
 			}
+
+			/* Check if we actually need sml handoff, so mainline can boot without it. */
+			load_secure = spl_part_exists(dev,
+					(const char *)spl_slot_name("sml", g_slot_suffix));
+
+			if (!sysdump_security && load_secure) {  //sysdump mode (tos panic) don't load tos and sml
+				/* The previously deferred firewall setup, now that we know we need it. */
+				sprd_firewall_config_pre();
+
 #ifdef CONFIG_SPL_DRAM_SCRUB
-			/* zero the secure region before loading SML/TOS/TEECFG on top, so
-			 * SML never sees Android's stale DRAM on a from-Android reboot */
-			spl_dram_scrub(CONFIG_SML_LDADDR_START, CONFIG_SEC_MEM_SIZE);
+				/* zero the secure region before loading SML/TOS/TEECFG on top, so
+				 * SML never sees Android's stale DRAM on a from-Android reboot */
+				spl_dram_scrub(CONFIG_SML_LDADDR_START, CONFIG_SEC_MEM_SIZE);
 #endif
 #if CONFIG_SMLBOOT// whale
-			load_partition_with_header(spl_slot_name("sml", g_slot_suffix), SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
-			load_partition_with_header(spl_slot_name("trustos", g_slot_suffix), TOS_LOAD_MAX_SIZE,CONFIG_TOS_LDADDR_START,(sys_img_header*)(CONFIG_TOS_LDADDR_START-IMAGE_HEAD_SIZE));
+				load_partition_with_header(spl_slot_name("sml", g_slot_suffix), SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
+				load_partition_with_header(spl_slot_name("trustos", g_slot_suffix), TOS_LOAD_MAX_SIZE,CONFIG_TOS_LDADDR_START,(sys_img_header*)(CONFIG_TOS_LDADDR_START-IMAGE_HEAD_SIZE));
 #endif
-
-			if (!sysdump_security) {  //sysdump mode (tos panic) don't load tos and sml
 #ifdef CONFIG_TEECFG_LDADDR_START
 				/* teecfg carries the secure-world memory map; stock loads it first and passes it to SML */
 				load_partition_with_header(spl_slot_name("teecfg", g_slot_suffix), TEECFG_LOAD_MAX_SIZE, CONFIG_TEECFG_LDADDR_START, (sys_img_header *)(CONFIG_TEECFG_LDADDR_START - IMAGE_HEAD_SIZE));
 #endif
-
 #ifdef CONFIG_LOAD_ATF
 				load_partition_with_header(spl_slot_name("sml", g_slot_suffix), SML_LOAD_MAX_SIZE,CONFIG_SML_LDADDR_START,(sys_img_header*)(CONFIG_SML_LDADDR_START-IMAGE_HEAD_SIZE));
 #endif
-
 #ifdef CONFIG_LOAD_TOS_ALONE
 				load_partition_with_header(spl_slot_name("trustos", g_slot_suffix), TOS_LOAD_MAX_SIZE,CONFIG_TOS_LDADDR_START,(sys_img_header*)(CONFIG_TOS_LDADDR_START-IMAGE_HEAD_SIZE));
 #endif
+#ifdef CONFIG_SPL_FW_PARITY
+				/* stock parity: now that teecfg is loaded, extend PUB firewall seg0
+				 * to cover TEECFG..end-of-TOS, using the tos_size from the teecfg
+				 * header (offset 0x20). Matches stock's tos_sec after teecfg parse. */
+				{
+					sprd_fw_attr fw_attr;
+					fw_attr.tos_size = *((volatile unsigned int *)(CONFIG_TEECFG_LDADDR_START + 0x20));
+					sprd_firewall_config_attr(&fw_attr);
+				}
+#endif
 			}
 
-#ifdef CONFIG_SPL_FW_PARITY
-			/* stock parity: now that teecfg is loaded, extend PUB firewall seg0
-			 * to cover TEECFG..end-of-TOS, using the tos_size from the teecfg
-			 * header (offset 0x20). Matches stock's tos_sec after teecfg parse. */
-			if (!sysdump_security) {
-				sprd_fw_attr fw_attr;
-				fw_attr.tos_size = *((volatile unsigned int *)(CONFIG_TEECFG_LDADDR_START + 0x20));
-				sprd_firewall_config_attr(&fw_attr);
-			}
-#endif
+			/* u-boot: always, from the selected GPT device (SD or eMMC). */
+			uboot_ok = (0 == load_partition_with_header(spl_slot_name("uboot", g_slot_suffix),CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ))) ? TRUE : FALSE;
 
 #ifdef CONFIG_SD_BOOT
-			/* SD reuses the eMMC (SDIO0) controller and handle: the SD attempt
-			 * soft-resets SDIO0 and drops its clock to SD-init speed. Re-init eMMC
-			 * afterwards to restore the shared controller before the jump, then
-			 * fall back to the eMMC u-boot slot if no valid image was on the card. */
-			{
-				BOOLEAN sd_loaded = spl_load_uboot_from_sd();
+			/* Legacy fallback: raw DHTB u-boot at the fixed SD boot sector 2900,
+			 * Then restore eMMC (SD reset SDIO0) and possibly fallback to u-boot
+			 * from the eMMC A/B slot. */
+			if (TRUE != uboot_ok) {
+				BOOLEAN sd_raw = spl_load_uboot_from_sd();
 				Emmc_Init();
-				if (TRUE != sd_loaded) {
+				spl_set_boot_dev(NULL);   /* back to eMMC for the final fallback */
+				if (TRUE != sd_raw) {
+					int slot;
 #ifdef CONFIG_SPL_VIBRATE_MARKERS
 					spl_buzz(9);   /* DIAG: SD failed, loading u-boot from eMMC */
 #endif
+					slot = spl_select_slot();
+					if (slot < 0)
+						slot = 1;
+					g_slot_suffix[0] = '_';
+					g_slot_suffix[1] = slot ? 'b' : 'a';
 					load_partition_with_header(spl_slot_name("uboot", g_slot_suffix),CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ));
 				}
 			}
-#else
-			load_partition_with_header(spl_slot_name("uboot", g_slot_suffix),CONFIG_UBOOT_MAX_SIZE,CONFIG_SYS_NAND_U_BOOT_DST,(sys_img_header*)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ));
 #endif
 
 #ifdef CONFIG_MOBILEVISOR
@@ -986,15 +1043,16 @@ if (!sysdump_mode)
 	SPRD_EVM_TAG(3);
 #endif
 
-
-#ifdef CONFIG_SPL_JUMP_UBOOT_DIRECT
-	/* Diagnostic: skip the SML/secure-world handoff and jump straight to u-boot.
-	 * If the panel lights and the logo appears, DDR init + image load worked and
-	 * the hang is in the secure-world (SML) handoff. If it stays black, the hang
-	 * is earlier (DDR init or the image load). */
-	((void (*)(void))(void *)CONFIG_SYS_NAND_U_BOOT_START)();
-	while (1);
+	/* If we didn't load any secure world and we got this far, we need
+	 * to jump directly to U-Boot rather than an empty destination. */
+	if (!load_secure) {
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
+		spl_buzz(7);   /* STAGE 6 + 1: DDR + load done, jumping to just U-Boot. */
 #endif
+		((void (*)(void))(void *)CONFIG_SYS_NAND_U_BOOT_START)();
+		while (1);
+	}
+
 #if CONFIG_SMLBOOT || CONFIG_LOAD_ATF
 	if (!sysdump_security) {
 		uboot = (void *)CONFIG_SML_LDADDR_START;

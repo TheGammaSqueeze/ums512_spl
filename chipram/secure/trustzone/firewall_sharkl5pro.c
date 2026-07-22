@@ -393,10 +393,15 @@ static void disable_tzpc (void)
 	REG32(REG_AON_SEC_APB_SEC_EB + CLR_REG_OFF) = BIT_AON_SEC_APB_SEC_TZPC_EB;
 }
 
-void sprd_firewall_config_pre (void)
+void sprd_firewall_usb_clk_enable (void)
 {
 	// special for sharkl5, enable USB clk.
 	REG32(REG_AON_APB_APB_EB1 + SET_REG_OFF) = BIT_AON_APB_OTG_UTMI_EB;
+}
+
+void sprd_firewall_config_pre (void)
+{
+	sprd_firewall_usb_clk_enable();
 
 #ifdef CONFIG_SECBOOT
 	sce_sec();
