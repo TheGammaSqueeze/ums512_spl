@@ -41,8 +41,10 @@ python3 scripts/patch_stock_spl.py stock_spl_a.img spl_open.img
 # flash spl_open.img to both spl_a and spl_b
 ```
 
-This is the recommended image to flash. The from-source variants below are an
-alternative that reproduces the same behaviour by recompiling.
+This is the simplest image to flash if you only need stock behaviour with a
+patched u-boot. The from-source `signed-open` build below is confirmed booting on
+real hardware and is the one to use for the features this tree adds on top of
+stock, in particular SD-card boot (see "SD-card boot").
 
 ## Layout
 
@@ -50,11 +52,14 @@ alternative that reproduces the same behaviour by recompiling.
 chipram/        Vendored Unisoc chipram bootloader source (the SPL lives in
                 chipram/nand_spl, sharkl5pro board code under
                 chipram/nand_spl/board/spreadtrum/sharkl5pro).
-board/          Board config fragments appended to the generated config.h.
-                One per variant (nosec, secure). See "Where the config comes
-                from" below.
-tools/          imgheaderinsert, the stock Unisoc DHTB header tool (i386 ELF).
-scripts/        setup-toolchain.sh, dhtb_pack.py (portable packer).
+board/          Board config fragments appended to the generated config.h,
+                one per build variant: nosec, secure, open (used by the
+                signed-open modding image), diag (open + on-device diagnostics).
+                See "Where the config comes from" below.
+tools/          imgheaderinsert, the stock Unisoc DHTB header tool (i386 ELF),
+                plus imgheaderinsert_secure, sprd_sign and the signing keys.
+scripts/        setup-toolchain.sh, dhtb_pack.py (portable packer),
+                stock_frame.py, patch_stock_spl.py.
 build.sh        Top level build driver.
 ```
 
@@ -64,31 +69,37 @@ build.sh        Top level build driver.
 # one time, on Debian or Ubuntu
 ./scripts/setup-toolchain.sh
 
-# build both variants (default)
+# build all four variants (default)
 ./build.sh
 
 # or a single variant
 ./build.sh nosec
 ./build.sh secure
+./build.sh signed
+./build.sh signed-open
 ```
 
 Results:
 
 ```
-out/nosec/spl_a_nosec.img     out/nosec/spl_b_nosec.img
-out/secure/spl_a_secure.img   out/secure/spl_b_secure.img
+out/nosec/spl_a_nosec.img               out/nosec/spl_b_nosec.img
+out/secure/spl_a_secure.img             out/secure/spl_b_secure.img
+out/signed/spl_a_signed.img             out/signed/spl_b_signed.img
+out/signed-open/spl_a_signed-open.img   out/signed-open/spl_b_signed-open.img
 ```
 
 Flash the variant you want to the `spl_a` and `spl_b` partitions (for example
-with fastboot, or by placing it in a PAC). Use `nosec` for an unlocked / not
-fused unit that boots unsigned or patched u-boot. Use `secure` only on a fused
-unit where the downstream images are signed with the matching key, otherwise
-the SPL will reject them.
+with fastboot, or by placing it in a PAC). For this device the practical choice
+is **`signed-open`**: it is signed with the matching key so a fused unit's
+BootROM accepts it, and it does the full secure-world bring-up like stock while
+stubbing the RSA image checks so a patched or self-built u-boot boots. This is
+the from-source image confirmed booting on real hardware, and the one that
+carries the SD-card boot support. Use `nosec` only on a non-fused unit for
+reference, and `secure` only on a fused unit where the downstream images are
+signed with the matching key, otherwise the SPL will reject them.
 
 ### variants
 
-| variant | CONFIG_SECBOOT | signed | use |
-| ------- | -------------- | ------ | --- |
 | variant | CONFIG_SECBOOT | RSA image checks | signed | use |
 | ------- | -------------- | ---------------- | ------ | --- |
 | nosec       | off | n/a          | no  | Reference only. No secure-DDR firewall, will not complete boot on this secure device. |
@@ -218,6 +229,71 @@ Not reimplemented (deliberate, not boot-blocking): the Virtual-A/B
 `merge_status` snapshot-merge fast path, and the teecfg-derived
 `sprd_firewall_config_attr` sizing on the secure variant (the vendored
 `get_tos_size` uses an older teecfg layout that does not match this device).
+
+## SD-card boot
+
+The SPL can boot u-boot from an external microSD card instead of eMMC. On every
+boot it loads the secure images (teecfg/sml/trustos) from eMMC as usual, then
+tries the SD card for u-boot first, and only if no valid image is found there
+does it fall back to the eMMC `uboot_<slot>` partition. This is gated by
+`CONFIG_SD_BOOT` (defined in `chipram/include/configs/ums512_1h10.h`, on for this
+board) and implemented in `spl_load_uboot_from_sd()` in
+`chipram/nand_spl/emmc_boot.c`.
+
+**Placing u-boot on the card.** Write a plain DHTB-wrapped u-boot to the raw
+card starting at **sector 200** (byte offset `0x19000`):
+
+- sector 200: the 512 byte DHTB header (`"DHTB"` magic `0x42544844` at offset 0,
+  payload length at offset `0x30`),
+- sector 201 onward: the raw u-boot payload.
+
+The image on the card is **not** signature/cert checked: a DHTB-wrapped u-boot
+whose magic is present is treated as valid and loaded (exactly `mImgSize` bytes,
+no trailing cert), so it must be under `CONFIG_UBOOT_MAX_SIZE` (1 MiB). A card
+with no valid DHTB image at sector 200 simply falls through to eMMC, so an
+inserted data card does not break booting.
+
+**Why the SPL does the full SD bring-up.** The SPL itself is loaded from eMMC, so
+the BootROM only ever initializes the eMMC controller; the SD controller (SDIO0
+at `0x71100000`) and the slot are completely cold. The SD path therefore performs
+all of the controller and slot bring-up that the kernel/u-boot pinctrl would
+normally do later:
+
+- **card power**: enable the sc2730 `vddsdcore`/`vddsdio` LDOs. The power
+  registers are write-protected, so the power-down clears are silently dropped
+  unless the unlock magic (`0x6e7f`) is written first, matching `regulator_init()`
+  in `sc27xx_regulator.c`.
+- **clock**: set `base_clock` and select the 384 MHz SDIO0 2x source in the AP
+  clock core (`REG_AP_CLK_CORE_CGM_SDIO0_2X_CFG`), then divide down to the 400 kHz
+  init clock.
+- **pads**: the SD0 pads come up in func4, where the controller can read the
+  lines but cannot drive CMD/CLK, so they are forced to func1; CMD/DAT pull-ups
+  are enabled so the removable-slot lines do not float; and the SDIO0 on-die IO
+  supply gate (`BIT_AON_APB_AP_SDIO0_IO_POWER_OFF`) is cleared.
+- **PHY delay**: load DLL backup mode plus the board legacy phy-delay so the data
+  lines sample correctly when the clock is raised for reads.
+
+This bring-up lives in `SD_HOST_Register()` and `SD_Set_init_clk()` in
+`chipram/nand_spl/mmc_v40.c`, guarded by `CONFIG_SOC_SHARKL5PRO` /
+`CONFIG_ADIE_SC2730`. Validated on hardware: it boots u-boot straight from the
+card, and eMMC boot still works when no card image is present. The binary-patch
+path (above) is the stock SPL and does not include SD boot; use the from-source
+`signed-open` build for it.
+
+## Secure-world handoff (survives an Android shutdown)
+
+The from-source secure build reproduces the stock SPL's PUB memory-firewall
+handoff so that it keeps booting after Android has run and been shut down. An
+earlier version sized the SEG_0 secure region as a fixed 32 MB
+(`0x94000000..0x95ffffff`), which is broader than stock: stock sizes SEG_0 to the
+TEECFG..end-of-TOS extent and leaves the memory above TOS open. A fresh flash
+booted fine, but once Android's TOS provisioned memory in the region our
+over-broad SEG_0 had marked secure-only, the next boot's TOS faulted and the SML
+handoff hung. The fix sizes SEG_0 like stock (via `sml_teecfg_sec` plus a
+`tos_sec` call after the teecfg load), reprograms the above-DRAM SEG_7 catch-all
+every boot, matches the AON `iram_sec` ranges, and uses the stock 64-bit
+`CHIPRAM_ENV` layout. It lives in
+`chipram/secure/trustzone/firewall_sharkl5pro.c`.
 
 ## Compatibility with the stock spl_a.img
 
