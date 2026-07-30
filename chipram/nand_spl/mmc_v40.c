@@ -1940,6 +1940,15 @@ static BOOLEAN SD_CARD_SDIO_InitCard(SDIO_Hd_Ptr pHd, uint32 sdioClk, SDIO_BusWi
 	}
 
 	//for cmd55 and cmd41
+	/* Bound the ACMD41 power-up poll. Each ACMD55/ACMD41 pair completes cleanly
+	 * (a well-formed R3 with the busy bit clear raises no command error), so a
+	 * card that answers but never asserts power-up-done (BIT_7) would spin here
+	 * forever: a warm-reboot 1.8V-latched UHS card, or a marginal/counterfeit
+	 * card. SD_Init() runs before the eMMC fallback, so an unbounded spin hangs
+	 * the whole boot with no recovery. Cap it the same way the MMC CMD1 loop
+	 * above already does, so a stuck card fails init cleanly and boot falls
+	 * through to eMMC. */
+	pre_tick = SCI_GetTickCount();
 	do {
 		if (0 != SDIO_SendCmd(pHd, CARD_ACMD55_APP_CMD, 0, NULL, rspBuf)) {
 			return FALSE;
@@ -1956,6 +1965,11 @@ static BOOLEAN SD_CARD_SDIO_InitCard(SDIO_Hd_Ptr pHd, uint32 sdioClk, SDIO_BusWi
 				sdHighCap = FALSE;
 			}
 			break;
+		}
+
+		cur_tick = SCI_GetTickCount();
+		if (10000 < (cur_tick - pre_tick)) {
+			return FALSE;
 		}
 
 	} while (1);
