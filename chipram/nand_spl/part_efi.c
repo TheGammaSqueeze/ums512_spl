@@ -63,7 +63,14 @@ int get_partition_info_by_name_efi(block_dev_desc_t * dev_desc, uchar * partitio
 	/* This function validates AND fills in the GPT header and PTE */
 	if (is_gpt_valid(dev_desc, GPT_PRIMARY_PARTITION_TABLE_LBA,
 			gpt_head, &pgpt_pte) != 1) {
-		if (is_gpt_valid(dev_desc, (dev_desc->lba - 1),
+		/* Only try the backup GPT (at the last LBA) if the device reported a real
+		 * size. A removable SD card whose capacity is unknown (sd_get_dev sets
+		 * dev->lba = 0) would otherwise read (0 - 1) = a huge out-of-range sector;
+		 * that read wedges the shared SDIO0 controller and hangs the boot whenever
+		 * a non-OS card is inserted (e.g. an exFAT storage card, which has only an
+		 * MBR and no GPT). eMMC reports a real lba so its backup path is unchanged. */
+		if (dev_desc->lba < 2 ||
+		    is_gpt_valid(dev_desc, (dev_desc->lba - 1),
 				gpt_head, &pgpt_pte) != 1) {
 			return -1;
 		}
