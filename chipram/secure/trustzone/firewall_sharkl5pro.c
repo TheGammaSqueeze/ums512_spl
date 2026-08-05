@@ -120,12 +120,19 @@
 #define IRAM_FW_ADDR	0x00002000
 #define IRAM_FW_SIZE	0x1000
 
-// IRAM for efuse
-#ifdef CONFIG_SPL_FW_PARITY
-#define IRAM_EFUSE_ADDR	0x00000800	/* stock: efuse iram fw first/last = 0x80/0xbf */
-#else
+/*
+ * IRAM for efuse. Deliberately NOT covered by CONFIG_SPL_FW_PARITY.
+ *
+ * Stock's segment reads first/last = 0x80/0xbf, i.e. it protects 0x800-0xBFF,
+ * and matching that was tempting for parity. But this must track where we
+ * actually stage the data: write_efuse_to_ram() (drivers/efuse/efuse.c) puts the
+ * status word at 0x15C00 and blocks 72..95 at 0x15C04, and the kernel's
+ * sprd,ums512-cache-efuse node reads it back from there (DT efuse@800 is an
+ * offset into the IRAM aperture based at 0x15400: 0x15400 + 0x800 = 0x15C00).
+ * Pointing the segment at 0x800 protects a region nothing uses and leaves the
+ * real shadow open to other masters.
+ */
 #define IRAM_EFUSE_ADDR	0x00015C00
-#endif
 #define IRAM_EFUSE_SIZE	0x00000400
 
 typedef struct {
