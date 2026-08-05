@@ -359,8 +359,27 @@ void sansa_enable_efuse_EB(void)
 #define BLK_END 95
 #define BLK_NUM 24
 #define BLK_DOUBLE 0
-#define EFUSE_IRAM_BASE 0x00015c04
-#define EFUSE_IRAM_END	0x00015fff
+/*
+ * Stage at 0x800 (status word) / 0x804 (blocks 72..95), NOT the 0x15c04 that
+ * came in with the vendor import. That address is where *this* SoC's kernel
+ * looks: the stock dts has a root-level node
+ *
+ *     efuse@800 { compatible = "sprd,ums512-cache-efuse";
+ *                 reg = <0x00 0x800 0x00 0x3ff>; ... }
+ *
+ * i.e. absolute 0x800, size 0x3ff - and every thm*-sen/-ratio/-sign and
+ * dvfs-bin cell is an offset into it. Confirmed against the stock SPL binary,
+ * whose staging routine does: mov x0,#0x804 / zero-fill to 0x864 /
+ * efuse_read_drv(72, 95, buf, 0) / status word to 0x800.
+ *
+ * With the old 0x15c04 the SPL wrote a correct shadow to an address nothing
+ * reads, and the kernel took whatever happened to be at 0x800 - giving wrong
+ * thermal trim and a garbage dvfs_bin (which costs cpu0-5 their cpufreq policy
+ * entirely). It looked like it worked only on a warm reboot, because IRAM
+ * survives warm reset and a preceding stock boot had left a good shadow there.
+ */
+#define EFUSE_IRAM_BASE 0x00000804
+#define EFUSE_IRAM_END	0x00000bff
 #endif
 
 #if defined(CONFIG_SOC_SHARKL5) || defined(CONFIG_SOC_SHARKL5PRO)

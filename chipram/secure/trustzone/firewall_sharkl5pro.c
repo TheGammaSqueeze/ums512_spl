@@ -121,11 +121,7 @@
 #define IRAM_FW_SIZE	0x1000
 
 // IRAM for efuse
-#ifdef CONFIG_SPL_FW_PARITY
 #define IRAM_EFUSE_ADDR	0x00000800	/* stock: efuse iram fw first/last = 0x80/0xbf */
-#else
-#define IRAM_EFUSE_ADDR	0x00015C00
-#endif
 #define IRAM_EFUSE_SIZE	0x00000400
 
 typedef struct {
@@ -340,17 +336,36 @@ static void tos_sec (uint32_t tos_size)
  * TZPC/mem-firewall block is always-on and NOT reset by a warm reset, so stock
  * relies on rewriting it every boot. Our SPL never programmed it, so once Android's
  * secure world (TOS) has touched this segment, our next boot left it stale - which
- * only bites after Android has provisioned, matching the observed failure. */
-#define CHIPRAM_ENV_DRAM_SIZE_ADDR	(0x82000000 + 0x8)   /* u64 dram_size lo word */
+ * only bites after Android has provisioned, matching the observed failure.
+ *
+ * chipram_env_t (arch-sharkl5pro/sprd_chipram_env.h) field offsets. Take the
+ * size from cs_number/cs0_size/cs1_size, NOT from `dram_size` at +0x8:
+ * chipram_env_set() writes dram_size = 0 and nothing ever fills it in, so the
+ * old read returned 0 every boot, tripped the guard below and made this whole
+ * function a silent no-op. The DDR init writes the cs_* fields instead
+ * (dmc_sprd_r1p0.c: pMem->cs_number / cs0_size / cs1_size), which is exactly
+ * what the stock SPL reads here.
+ */
+#define CHIPRAM_ENV_BASE		0x82000000
+#define CHIPRAM_ENV_CS_NUMBER		(CHIPRAM_ENV_BASE + 0x20)
+#define CHIPRAM_ENV_CS0_SIZE		(CHIPRAM_ENV_BASE + 0x28)   /* u64 */
+#define CHIPRAM_ENV_CS1_SIZE		(CHIPRAM_ENV_BASE + 0x30)   /* u64 */
 static void mem_top_catchall_sec (void)
 {
 	uint32_t i;
-	uint32_t dram_size;
+	uint64_t dram_size;
+	uint32_t cs_number;
 	sprd_mem_seg_cfg *seg_addr;
 
-	/* total DRAM bytes (cs0+cs1) that dmc_update_param_for_uboot wrote to
-	 * CHIPRAM_ENV during DDR init. Matches the value stock's catch-all uses. */
-	dram_size = REG32(CHIPRAM_ENV_DRAM_SIZE_ADDR);
+	/* total populated DRAM bytes, same derivation as stock */
+	cs_number = REG32(CHIPRAM_ENV_CS_NUMBER);
+	if (cs_number == 1)
+		dram_size = *(volatile uint64_t *)((uint64_t)CHIPRAM_ENV_CS0_SIZE);
+	else if (cs_number == 2)
+		dram_size = *(volatile uint64_t *)((uint64_t)CHIPRAM_ENV_CS0_SIZE) +
+			    *(volatile uint64_t *)((uint64_t)CHIPRAM_ENV_CS1_SIZE);
+	else
+		dram_size = 0;
 
 	/* Safety: a first_addr below the real top-of-DRAM would deny DRAM to every
 	 * master and hang instantly. The env dram_size on this device is a stable
